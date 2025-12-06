@@ -1,0 +1,10 @@
+# Temporary files
+cookies.txt
+*.log
+server.log
+
+# Test files  
+test.html
+
+# API keys (sensitive data)
+wb-api-key.txt
