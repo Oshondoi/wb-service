@@ -5,6 +5,7 @@ const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const fs = require('fs');
 const path = require('path');
+const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,10 +39,6 @@ app.use(session({
   }
 }));
 
-// Учетные данные (статичные)
-const ADMIN_LOGIN = 'admin';
-const ADMIN_PASSWORD = 'tarelkastakan';
-
 // Диагностика неожиданных ошибок чтобы процесс не падал молча
 process.on('unhandledRejection', err => {
   console.error('UnhandledRejection:', err && err.message);
@@ -60,15 +57,17 @@ const randomDelay = (minSec, maxSec) => {
   return delay(ms);
 };
 
-// Middleware для проверки авторизации
+// Middleware для проверки авторизации через БД
 function requireAuth(req, res, next) {
   // Проверяем токен в cookie
   const token = req.cookies?.authToken;
   if (token) {
     try {
-      const decoded = Buffer.from(token, 'base64').toString('utf-8');
-      const [login, password] = decoded.split(':');
-      if (login === ADMIN_LOGIN && password === ADMIN_PASSWORD) {
+      const accountId = parseInt(token, 10);
+      const account = db.getAccountById(accountId);
+      if (account) {
+        // Прикрепляем информацию об аккаунте к запросу
+        req.account = account;
         return next();
       }
     } catch (e) {
@@ -76,14 +75,15 @@ function requireAuth(req, res, next) {
     }
   }
   
-  // Проверяем токен в заголовке Authorization
+  // Проверяем токен в заголовке Authorization (для API)
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const bearerToken = authHeader.substring(7);
     try {
-      const decoded = Buffer.from(bearerToken, 'base64').toString('utf-8');
-      const [login, password] = decoded.split(':');
-      if (login === ADMIN_LOGIN && password === ADMIN_PASSWORD) {
+      const accountId = parseInt(bearerToken, 10);
+      const account = db.getAccountById(accountId);
+      if (account) {
+        req.account = account;
         return next();
       }
     } catch (e) {
@@ -167,75 +167,227 @@ document.getElementById('loginForm').onsubmit = function(e) {
 // API для входа
 app.post('/api/login', (req, res) => {
   const { login, password } = req.body;
-  if (login === ADMIN_LOGIN && password === ADMIN_PASSWORD) {
-    // Создаём токен и ставим в cookie
-    const token = Buffer.from(`${login}:${password}`).toString('base64');
+  
+  // Проверяем логин/пароль через БД
+  const account = db.authenticateAccount(login, password);
+  
+  if (account) {
+    // Создаём токен (ID аккаунта) и ставим в cookie
+    const token = account.id.toString();
     res.cookie('authToken', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000 // 24 часа
     });
-    return res.json({ success: true, token });
+    
+    return res.json({ 
+      success: true, 
+      token,
+      account: {
+        id: account.id,
+        username: account.username,
+        email: account.email
+      }
+    });
   }
+  
   res.json({ success: false, message: 'Неверный логин или пароль' });
 });
 
-// Хранилище API ключа (в продакшене использовать БД с шифрованием)
-let WB_API_KEY = '';
+// ==================== API: УПРАВЛЕНИЕ КОМПАНИЯМИ ====================
 
-// API для сохранения WB API ключа
-app.post('/api/save-wb-key', requireAuth, (req, res) => {
-  const { apiKey } = req.body;
-  
-  if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
-    return res.json({ success: false, error: 'API ключ не может быть пустым' });
-  }
-  
-  WB_API_KEY = apiKey.trim();
-  console.log('✅ WB API ключ сохранен:', apiKey.substring(0, 15) + '...');
-  
-  // Сохраняем в файл для персистентности
+// Получить список компаний текущего аккаунта
+app.get('/api/businesses', requireAuth, (req, res) => {
   try {
-    fs.writeFileSync(path.join(__dirname, 'wb-api-key.txt'), WB_API_KEY, 'utf8');
-  } catch (err) {
-    console.warn('Не удалось сохранить ключ в файл:', err.message);
+    const businesses = db.getBusinessesByAccount(req.account.id);
+    const stats = db.getAccountStats(req.account.id);
+    res.json({ success: true, businesses, stats });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
   }
-  
-  res.json({ success: true, message: 'API ключ сохранен' });
 });
 
-// Загрузка API ключа при старте
-try {
-  const keyPath = path.join(__dirname, 'wb-api-key.txt');
-  if (fs.existsSync(keyPath)) {
-    WB_API_KEY = fs.readFileSync(keyPath, 'utf8').trim();
-    console.log('✅ WB API ключ загружен из файла');
+// Создать новую компанию
+app.post('/api/businesses', requireAuth, (req, res) => {
+  const { company_name, wb_api_key, description } = req.body;
+  
+  if (!company_name || !wb_api_key) {
+    return res.json({ success: false, error: 'Название компании и API ключ обязательны' });
   }
-} catch (err) {
-  console.warn('Не удалось загрузить API ключ:', err.message);
-}
+  
+  try {
+    const business = db.createBusiness(req.account.id, company_name, wb_api_key, description);
+    res.json({ success: true, business });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Обновить данные компании
+app.put('/api/businesses/:id', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.id);
+  const { company_name, wb_api_key, description, is_active } = req.body;
+  
+  // Проверяем, что компания принадлежит текущему аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const updates = {};
+    if (company_name !== undefined) updates.company_name = company_name;
+    if (wb_api_key !== undefined) updates.wb_api_key = wb_api_key;
+    if (description !== undefined) updates.description = description;
+    if (is_active !== undefined) updates.is_active = is_active ? 1 : 0;
+    
+    const success = db.updateBusiness(businessId, updates);
+    res.json({ success, message: success ? 'Компания обновлена' : 'Компания не найдена' });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Удалить компанию
+app.delete('/api/businesses/:id', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.id);
+  
+  // Проверяем, что компания принадлежит текущему аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const success = db.deleteBusiness(businessId);
+    res.json({ success, message: success ? 'Компания удалена' : 'Компания не найдена' });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Получить компанию по умолчанию (для fin-report)
+app.get('/api/businesses/default', requireAuth, (req, res) => {
+  try {
+    const business = db.getDefaultBusiness(req.account.id);
+    if (!business) {
+      return res.json({ success: false, error: 'Нет активных компаний. Создайте компанию.' });
+    }
+    res.json({ success: true, business });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ==================== API: СЕБЕСТОИМОСТЬ ====================
+
+// Получить себестоимость всех товаров компании
+app.get('/api/product-costs/:businessId', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  
+  // Проверяем принадлежность компании к аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const costs = db.getProductCostsByBusiness(businessId);
+    res.json({ success: true, costs });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Массовое сохранение себестоимости
+app.post('/api/product-costs/:businessId/bulk', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  const { products } = req.body;
+  
+  // Проверяем принадлежность компании к аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.json({ success: false, error: 'Нет данных для сохранения' });
+  }
+  
+  try {
+    const count = db.bulkUpsertProductCosts(businessId, products);
+    res.json({ success: true, count, message: `Сохранено ${count} позиций` });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Получить себестоимость конкретного товара
+app.get('/api/product-costs/:businessId/:nmId', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  const nmId = req.params.nmId;
+  
+  // Проверяем принадлежность компании к аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const cost = db.getProductCost(businessId, nmId);
+    if (!cost) {
+      return res.json({ success: false, error: 'Себестоимость не найдена' });
+    }
+    res.json({ success: true, cost });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Удалить себестоимость товара
+app.delete('/api/product-costs/:businessId/:nmId', requireAuth, (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  const nmId = req.params.nmId;
+  
+  // Проверяем принадлежность компании к аккаунту
+  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const success = db.deleteProductCost(businessId, nmId);
+    res.json({ success, message: success ? 'Себестоимость удалена' : 'Себестоимость не найдена' });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
 
 // API для получения финансовых данных (продажи + заказы)
 app.get('/api/wb-finance', requireAuth, async (req, res) => {
-  if (!WB_API_KEY) {
-    return res.json({ error: 'API ключ не настроен. Добавьте ключ через кнопку "Добавить API ключ"' });
+  // Получаем компанию из параметров или берём дефолтную
+  const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
+  let business;
+  
+  if (businessId) {
+    business = db.getBusinessById(businessId);
+    if (!business || business.account_id !== req.account.id) {
+      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+    }
+  } else {
+    business = db.getDefaultBusiness(req.account.id);
+  }
+  
+  if (!business) {
+    return res.json({ error: 'Нет активных компаний. Создайте компанию через интерфейс управления.' });
   }
 
   try {
-    // Получаем данные за последние 30 дней
-    const dateFrom = new Date();
-    dateFrom.setDate(dateFrom.getDate() - 30);
-    const dateTo = new Date();
-    
-    const dateFromStr = dateFrom.toISOString().split('T')[0];
+    // Получаем даты из параметров запроса
+    const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
     // API WB для получения отчета о продажах
     const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
     
     const response = await axios.get(salesUrl, {
       headers: {
-        'Authorization': WB_API_KEY
+        'Authorization': business.wb_api_key
       },
       timeout: 15000
     });
@@ -278,19 +430,31 @@ app.get('/api/wb-finance', requireAuth, async (req, res) => {
 
 // API для получения продаж
 app.get('/api/wb-sales', requireAuth, async (req, res) => {
-  if (!WB_API_KEY) {
-    return res.json({ error: 'API ключ не настроен' });
+  // Получаем компанию
+  const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
+  let business;
+  
+  if (businessId) {
+    business = db.getBusinessById(businessId);
+    if (!business || business.account_id !== req.account.id) {
+      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+    }
+  } else {
+    business = db.getDefaultBusiness(req.account.id);
+  }
+  
+  if (!business) {
+    return res.json({ error: 'Нет активных компаний' });
   }
 
   try {
-    const dateFrom = new Date();
-    dateFrom.setDate(dateFrom.getDate() - 30);
-    const dateFromStr = dateFrom.toISOString().split('T')[0];
+    const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
     const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
     
     const response = await axios.get(salesUrl, {
-      headers: { 'Authorization': WB_API_KEY },
+      headers: { 'Authorization': business.wb_api_key },
       timeout: 15000
     });
 
@@ -323,19 +487,31 @@ app.get('/api/wb-sales', requireAuth, async (req, res) => {
 
 // API для получения заказов
 app.get('/api/wb-orders', requireAuth, async (req, res) => {
-  if (!WB_API_KEY) {
-    return res.json({ error: 'API ключ не настроен' });
+  // Получаем компанию
+  const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
+  let business;
+  
+  if (businessId) {
+    business = db.getBusinessById(businessId);
+    if (!business || business.account_id !== req.account.id) {
+      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+    }
+  } else {
+    business = db.getDefaultBusiness(req.account.id);
+  }
+  
+  if (!business) {
+    return res.json({ error: 'Нет активных компаний' });
   }
 
   try {
-    const dateFrom = new Date();
-    dateFrom.setDate(dateFrom.getDate() - 30);
-    const dateFromStr = dateFrom.toISOString().split('T')[0];
+    const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
     const ordersUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/orders?dateFrom=${dateFromStr}`;
     
     const response = await axios.get(ordersUrl, {
-      headers: { 'Authorization': WB_API_KEY },
+      headers: { 'Authorization': business.wb_api_key },
       timeout: 15000
     });
 
@@ -362,6 +538,147 @@ app.get('/api/wb-orders', requireAuth, async (req, res) => {
     res.json({ items, stats });
   } catch (err) {
     console.error('Ошибка получения заказов:', err.message);
+    res.json({ error: 'Ошибка: ' + err.message });
+  }
+});
+
+// API для получения сгруппированных продаж по уникальным артикулам
+app.get('/api/wb-sales-grouped', requireAuth, async (req, res) => {
+  // Получаем компанию
+  const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
+  let business;
+  
+  if (businessId) {
+    business = db.getBusinessById(businessId);
+    if (!business || business.account_id !== req.account.id) {
+      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+    }
+  } else {
+    business = db.getDefaultBusiness(req.account.id);
+  }
+  
+  if (!business) {
+    return res.json({ error: 'Нет активных компаний' });
+  }
+
+  try {
+    const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
+    
+    const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
+    
+    const response = await axios.get(salesUrl, {
+      headers: { 'Authorization': business.wb_api_key },
+      timeout: 15000
+    });
+
+    const sales = (response.data || []).filter(s => s.saleID);
+    
+    // Группируем по nmId (артикул WB)
+    const groupedMap = {};
+    
+    sales.forEach(sale => {
+      const nmId = sale.nmId;
+      
+      if (!groupedMap[nmId]) {
+        groupedMap[nmId] = {
+          nmId: nmId,
+          subject: sale.subject || '—',
+          brand: sale.brand || '—',
+          quantity: 0,
+          totalRevenue: 0,
+          totalCommission: 0,
+          totalLogistics: 0,
+          totalProfit: 0,
+          prices: [],
+          warehouseName: sale.warehouseName || '—'
+        };
+      }
+      
+      const retailAmount = sale.retail_amount || sale.priceWithDisc || sale.finishedPrice || 0;
+      const commission = sale.ppvz_sales_commission || 0;
+      const logistics = (sale.delivery_rub || 0) + 
+                       (sale.storage_fee || 0) + 
+                       (sale.acquiring_fee || 0) + 
+                       (sale.penalty || 0) + 
+                       (sale.deduction || 0) + 
+                       (sale.acceptance || 0);
+      const profit = retailAmount - commission - logistics;
+      
+      groupedMap[nmId].quantity += 1;
+      groupedMap[nmId].totalRevenue += retailAmount;
+      groupedMap[nmId].totalCommission += commission;
+      groupedMap[nmId].totalLogistics += logistics;
+      groupedMap[nmId].totalProfit += profit;
+      groupedMap[nmId].prices.push(retailAmount);
+    });
+    
+    // Преобразуем в массив и считаем среднюю цену
+    const groupedItems = Object.values(groupedMap).map(item => {
+      const avgPrice = item.prices.length > 0 
+        ? item.prices.reduce((sum, p) => sum + p, 0) / item.prices.length 
+        : 0;
+      
+      return {
+        nmId: item.nmId,
+        subject: item.subject,
+        brand: item.brand,
+        quantity: item.quantity,
+        totalRevenue: item.totalRevenue,
+        totalCommission: item.totalCommission,
+        totalLogistics: item.totalLogistics,
+        totalProfit: item.totalProfit,
+        avgPrice: avgPrice,
+        warehouseName: item.warehouseName
+      };
+    });
+    
+    // Сортируем по количеству продаж (от большего к меньшему)
+    groupedItems.sort((a, b) => b.quantity - a.quantity);
+    
+    res.json({ data: groupedItems });
+  } catch (err) {
+    console.error('Ошибка получения сгруппированных продаж:', err.message);
+    res.json({ error: 'Ошибка: ' + err.message });
+  }
+});
+
+// API для получения полного финансового отчёта WB (reportDetailByPeriod)
+app.get('/api/wb-fin-report', requireAuth, async (req, res) => {
+  // Получаем компанию
+  const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
+  let business;
+  
+  if (businessId) {
+    business = db.getBusinessById(businessId);
+    if (!business || business.account_id !== req.account.id) {
+      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+    }
+  } else {
+    business = db.getDefaultBusiness(req.account.id);
+  }
+  
+  if (!business) {
+    return res.json({ error: 'Нет активных компаний' });
+  }
+
+  try {
+    const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
+    const limit = req.query.limit || 100000;
+    const rrdid = req.query.rrdid || 0;
+    
+    const reportUrl = `https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod?dateFrom=${dateFromStr}&dateTo=${dateToStr}&limit=${limit}&rrdid=${rrdid}`;
+    
+    const response = await axios.get(reportUrl, {
+      headers: { 'Authorization': business.wb_api_key },
+      timeout: 30000
+    });
+
+    const data = response.data || [];
+    res.json({ data });
+  } catch (err) {
+    console.error('Ошибка получения финансового отчёта:', err.message);
     res.json({ error: 'Ошибка: ' + err.message });
   }
 });
@@ -997,19 +1314,40 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 .btn-cancel:hover{background:#b2bec3}
 .btn-save{background:#00b894;color:#fff}
 .btn-save:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,185,148,0.3)}
+.api-status{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:20px;font-size:14px;font-weight:600;margin-left:12px;vertical-align:middle}
+.api-status.active{background:#d4edda;color:#155724;border:2px solid #c3e6cb}
+.api-status.inactive{background:#f8d7da;color:#721c24;border:2px solid #f5c6cb}
+.api-status-icon{font-size:18px}
 </style>
 </head>
 <body>
 <div class="container">
-  <a href="/" class="back-btn">← Вернуться на главную</a>
-  <button class="api-btn" onclick="openApiModal()">🔑 Добавить API ключ</button>
+  <div style="margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <a href="/" class="back-btn">← Вернуться на главную</a>
+    <button class="api-btn" onclick="openBusinessManager()">🏢 Управление компаниями</button>
+    <div id="businessSelector" style="display:flex;gap:8px;align-items:center">
+      <label style="font-size:14px;font-weight:600;color:#2d3436">Компания:</label>
+      <select id="currentBusiness" onchange="switchBusiness()" style="padding:8px 12px;border:2px solid #dfe6e9;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;background:#fff">
+        <option value="">Загрузка...</option>
+      </select>
+    </div>
+  </div>
+
   <h1>📈 Финансовый отчет</h1>
-  
+
   <!-- Панель управления -->
-  <div style="display:flex;gap:12px;margin:20px 0;flex-wrap:wrap">
+  <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;align-items:center">
+    <div style="display:flex;gap:8px;align-items:center;background:#fff;padding:8px 16px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
+      <label style="font-size:14px;font-weight:600;color:#2d3436;white-space:nowrap">📅 Период:</label>
+      <input type="date" id="dateFrom" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px;font-size:14px;cursor:pointer" />
+      <span style="color:#636e72">—</span>
+      <input type="date" id="dateTo" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px;font-size:14px;cursor:pointer" />
+    </div>
+    <button id="btnFinReport" onclick="toggleReportType('finReport')" style="padding:12px 24px;background:#fff;color:#2d3436;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px;transition:all 0.3s">📈 Фин отчёт</button>
+    <button id="btnSalesReport" onclick="toggleReportType('salesReport')" style="padding:12px 24px;background:#fff;color:#2d3436;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px;transition:all 0.3s">💰 Продажи</button>
     <button onclick="loadFinancialData()" style="padding:12px 24px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px">📊 Загрузить данные</button>
-    <button onclick="loadSales()" style="padding:12px 24px;background:#0984e3;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px">💰 Продажи</button>
     <button onclick="loadOrders()" style="padding:12px 24px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px">📦 Заказы</button>
+    <button onclick="openCostModal()" style="padding:12px 24px;background:#fd79a8;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px">💰 Себестоимость</button>
   </div>
 
   <!-- Карточки с общей статистикой -->
@@ -1017,115 +1355,552 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
     <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:20px;border-radius:12px;color:#fff">
       <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Общая выручка</div>
       <div id="totalRevenue" style="font-size:28px;font-weight:700">—</div>
+      <div style="font-size:11px;opacity:0.7;margin-top:4px">Что заплатили покупатели</div>
     </div>
     <div style="background:linear-gradient(135deg,#f093fb 0%,#f5576c 100%);padding:20px;border-radius:12px;color:#fff">
       <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Комиссия WB</div>
       <div id="totalCommission" style="font-size:28px;font-weight:700">—</div>
+      <div style="font-size:11px;opacity:0.7;margin-top:4px">Удержание маркетплейса</div>
     </div>
     <div style="background:linear-gradient(135deg,#4facfe 0%,#00f2fe 100%);padding:20px;border-radius:12px;color:#fff">
-      <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Логистика</div>
+      <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Логистика + расходы</div>
       <div id="totalLogistics" style="font-size:28px;font-weight:700">—</div>
+      <div style="font-size:11px;opacity:0.7;margin-top:4px">Доставка, хранение, штрафы</div>
     </div>
     <div style="background:linear-gradient(135deg,#43e97b 0%,#38f9d7 100%);padding:20px;border-radius:12px;color:#fff">
-      <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Чистая прибыль</div>
+      <div style="font-size:14px;opacity:0.9;margin-bottom:8px">К перечислению</div>
       <div id="netProfit" style="font-size:28px;font-weight:700">—</div>
+      <div style="font-size:11px;opacity:0.7;margin-top:4px">Придёт на ваш счёт</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#ffd89b 0%,#19547b 100%);padding:20px;border-radius:12px;color:#fff">
+      <div style="font-size:14px;opacity:0.9;margin-bottom:8px">Чистая прибыль</div>
+      <div id="pureProfit" style="font-size:28px;font-weight:700">—</div>
+      <div style="font-size:11px;opacity:0.7;margin-top:4px">Расчёт добавится позже</div>
     </div>
   </div>
 
-  <!-- Таблица с данными -->
-  <div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);margin-top:20px">
+  <!-- Датасет (динамическая таблица) -->
+  <div id="datasetContainer" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);margin-top:20px;display:none">
     <div style="padding:20px;border-bottom:2px solid #f1f3f5">
-      <h2 style="margin:0;font-size:20px;color:#2d3436">📋 Детализация</h2>
+      <h2 style="margin:0;font-size:20px;color:#2d3436">📊 Датасет</h2>
     </div>
-    <div style="overflow-x:auto">
-      <table id="finTable" style="width:100%;border-collapse:collapse">
-        <thead>
+    <div style="overflow-x:auto;max-width:100%;max-height:600px;overflow-y:auto">
+      <table id="datasetTable" style="width:100%;border-collapse:collapse;min-width:3000px">
+        <thead id="datasetHeader" style="position:sticky;top:0;z-index:10">
           <tr style="background:#f8f9fa">
-            <th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Дата</th>
-            <th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Артикул</th>
-            <th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Название</th>
-            <th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Цена</th>
-            <th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Комиссия</th>
-            <th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Логистика</th>
-            <th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Прибыль</th>
-            <th style="padding:12px;text-align:center;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436">Тип</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Номер отчёта</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата начала</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата конца</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата создания</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Валюта</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID строки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">GI ID</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% доставки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тариф дата с</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тариф дата по</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Предмет</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Артикул WB</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Бренд</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Артикул продавца</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Размер</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Баркод</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип документа</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кол-во</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Цена розничная</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Сумма продажи</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% скидки</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% комиссии</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Склад</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Операция</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата заказа</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата продажи</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата отчёта</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ШК</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Розница со скидкой</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Стоимость доставки</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Сумма возврата</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Доставка руб</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип коробки</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Скидка товара</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Промо продавца</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% СПП</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% КВВ база</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% КВВ</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Рейтинг %</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">КГВП v2</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Комиссия продаж</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">К перечислению</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Вознаграждение</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Эквайринг</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% эквайринга</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Обработка платежа</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Банк эквайринга</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Вознаграждение WB</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">НДС вознагр</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Офис</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID офиса</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID продавца</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Название продавца</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ИНН</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">№ декларации</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип бонуса</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID стикера</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Страна сайта</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">DBS</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Штраф</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Доп. платёж</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Ребилл логистика</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Ребилл орг</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Хранение</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Удержание</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Приёмка</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID сборки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">КИЗ</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">SRID</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип отчёта</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Юрлицо</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">TRBX ID</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Рассрочка</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% скидки WIBES</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк сумма</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк скидка</th>
+            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк комиссия</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">UID заказа</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">График платежей</th>
           </tr>
         </thead>
-        <tbody id="finTableBody">
-          <tr>
-            <td colspan="8" style="padding:40px;text-align:center;color:#636e72">
-              Нажмите "Загрузить данные" для получения финансовой информации
-            </td>
-          </tr>
+        <tbody id="datasetBody">
         </tbody>
       </table>
     </div>
   </div>
 </div>
 
-<!-- Модальное окно для добавления API ключа -->
-<div id="apiModal" class="modal">
-  <div class="modal-content">
+<!-- Модальное окно управления компаниями -->
+<div id="businessModal" class="modal">
+  <div class="modal-content" style="max-width:900px">
     <div class="modal-header">
-      <h2>🔑 Добавить API ключ Wildberries</h2>
-      <button class="close-btn" onclick="closeApiModal()">&times;</button>
+      <h2>🏢 Управление компаниями</h2>
+      <button class="close-btn" onclick="closeBusinessManager()">&times;</button>
     </div>
-    <form id="apiForm" onsubmit="saveApiKey(event)">
-      <div class="form-group">
-        <label for="apiKey">Введите API ключ от Wildberries</label>
-        <input 
-          type="text" 
-          id="apiKey" 
-          name="apiKey" 
-          placeholder="Ваш API ключ" 
-          required
-          autocomplete="off"
-        />
-        <small>API ключ можно получить в личном кабинете продавца WB в разделе "Настройки" → "Доступ к API"</small>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn-cancel" onclick="closeApiModal()">Отмена</button>
-        <button type="submit" class="btn-save">Сохранить</button>
-      </div>
-    </form>
+    
+    <div style="margin-bottom:20px">
+      <button onclick="openAddBusinessForm()" style="padding:10px 20px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">+ Добавить компанию</button>
+    </div>
+    
+    <!-- Форма добавления компании -->
+    <div id="addBusinessForm" style="display:none;background:#f8f9fa;padding:20px;border-radius:8px;margin-bottom:20px">
+      <h3 style="margin-top:0">Новая компания</h3>
+      <form id="businessForm" onsubmit="addBusiness(event)">
+        <div class="form-group">
+          <label for="companyName">Название компании *</label>
+          <input type="text" id="companyName" placeholder="Моя компания" required />
+        </div>
+        <div class="form-group">
+          <label for="wbApiKey">API ключ Wildberries *</label>
+          <input type="text" id="wbApiKey" placeholder="Ваш API ключ от WB" required />
+          <small>API ключ можно получить в личном кабинете WB: Настройки → Доступ к API</small>
+        </div>
+        <div class="form-group">
+          <label for="description">Описание (необязательно)</label>
+          <textarea id="description" rows="2" placeholder="Краткое описание компании"></textarea>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button type="submit" style="padding:10px 20px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Сохранить</button>
+          <button type="button" onclick="closeAddBusinessForm()" style="padding:10px 20px;background:#dfe6e9;color:#2d3436;border:none;border-radius:8px;font-weight:600;cursor:pointer">Отмена</button>
+        </div>
+      </form>
+    </div>
+    
+    <!-- Список компаний -->
+    <div id="businessList" style="max-height:400px;overflow-y:auto">
+      <p style="text-align:center;color:#636e72">Загрузка...</p>
+    </div>
+  </div>
+</div>
+
+<!-- Модальное окно себестоимости -->
+<div id="costModal" class="modal">
+  <div class="modal-content" style="max-width:1000px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column">
+    <div class="modal-header" style="flex-shrink:0">
+      <h2>💰 Себестоимость товаров</h2>
+      <button class="close-btn" onclick="closeCostModal()">&times;</button>
+    </div>
+    
+    <div style="flex-shrink:0;padding:0 20px 15px;border-bottom:1px solid #dfe6e9">
+      <button onclick="loadCostData()" style="padding:10px 20px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">🚀 Запустить загрузку</button>
+      <button onclick="saveCostData()" style="padding:10px 20px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;margin-left:10px">💾 Сохранить</button>
+    </div>
+    
+    <div id="costTableContainer" style="flex:1;overflow:auto;padding:20px">
+      <p style="text-align:center;color:#636e72">Нажмите "Запустить загрузку" для получения данных</p>
+    </div>
   </div>
 </div>
 
 <script>
-function openApiModal() {
-  document.getElementById('apiModal').classList.add('active');
+// ==================== УПРАВЛЕНИЕ КОМПАНИЯМИ ====================
+let businesses = [];
+let currentBusinessId = null;
+
+function openBusinessManager() {
+  document.getElementById('businessModal').classList.add('active');
+  loadBusinesses();
 }
 
-function closeApiModal() {
-  document.getElementById('apiModal').classList.remove('active');
-  document.getElementById('apiForm').reset();
+function closeBusinessManager() {
+  document.getElementById('businessModal').classList.remove('active');
+  closeAddBusinessForm();
 }
 
-function saveApiKey(event) {
-  event.preventDefault();
-  const apiKey = document.getElementById('apiKey').value.trim();
-  
-  if (!apiKey) {
-    alert('Пожалуйста, введите API ключ');
+function openAddBusinessForm() {
+  document.getElementById('addBusinessForm').style.display = 'block';
+}
+
+function closeAddBusinessForm() {
+  document.getElementById('addBusinessForm').style.display = 'none';
+  document.getElementById('businessForm').reset();
+}
+
+function loadBusinesses() {
+  fetch('/api/businesses', {
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      businesses = data.businesses;
+      renderBusinessList(data.businesses);
+      updateBusinessSelector(data.businesses);
+    } else {
+      document.getElementById('businessList').innerHTML = '<p style="color:#d63031">Ошибка: ' + data.error + '</p>';
+    }
+  })
+  .catch(err => {
+    document.getElementById('businessList').innerHTML = '<p style="color:#d63031">Ошибка загрузки: ' + err.message + '</p>';
+  });
+}
+
+function renderBusinessList(businessList) {
+  if (businessList.length === 0) {
+    document.getElementById('businessList').innerHTML = '<p style="text-align:center;color:#636e72">Нет компаний. Добавьте первую компанию.</p>';
     return;
   }
   
-  // Здесь будет отправка API ключа на сервер
-  fetch('/api/save-wb-key', {
+  let html = '<div style="display:grid;gap:12px">';
+  businessList.forEach(business => {
+    const isActive = business.is_active === 1;
+    const statusBadge = isActive 
+      ? '<span style="background:#00b894;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px">Активна</span>'
+      : '<span style="background:#dfe6e9;color:#636e72;padding:4px 8px;border-radius:4px;font-size:12px">Неактивна</span>';
+    
+    html += \`
+      <div style="background:\${isActive ? '#fff' : '#f8f9fa'};padding:16px;border-radius:8px;border:2px solid \${isActive ? '#6c5ce7' : '#dfe6e9'}">
+        <div style="display:flex;justify-content:space-between;align-items:start">
+          <div style="flex:1">
+            <h4 style="margin:0 0 8px;color:#2d3436">\${business.company_name}</h4>
+            <p style="margin:0 0 4px;font-size:13px;color:#636e72">API: \${business.wb_api_key.substring(0, 20)}...</p>
+            \${business.description ? \`<p style="margin:0;font-size:13px;color:#636e72">\${business.description}</p>\` : ''}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            \${statusBadge}
+            <button onclick="toggleBusinessActive(\${business.id}, \${!isActive})" style="padding:6px 12px;background:#74b9ff;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer">\${isActive ? 'Деактивировать' : 'Активировать'}</button>
+            <button onclick="deleteBusiness(\${business.id}, '\${business.company_name}')" style="padding:6px 12px;background:#d63031;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer">Удалить</button>
+          </div>
+        </div>
+      </div>
+    \`;
+  });
+  html += '</div>';
+  
+  document.getElementById('businessList').innerHTML = html;
+}
+
+function addBusiness(event) {
+  event.preventDefault();
+  
+  const formData = {
+    company_name: document.getElementById('companyName').value.trim(),
+    wb_api_key: document.getElementById('wbApiKey').value.trim(),
+    description: document.getElementById('description').value.trim()
+  };
+  
+  fetch('/api/businesses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ' + localStorage.getItem('authToken')
     },
-    body: JSON.stringify({ apiKey: apiKey })
+    body: JSON.stringify(formData)
   })
   .then(res => res.json())
   .then(data => {
     if (data.success) {
-      alert('✅ API ключ успешно сохранен!');
-      closeApiModal();
+      alert('✅ Компания успешно добавлена!');
+      closeAddBusinessForm();
+      loadBusinesses();
     } else {
-      alert('❌ Ошибка: ' + (data.error || 'Не удалось сохранить ключ'));
+      alert('❌ Ошибка: ' + data.error);
+    }
+  })
+  .catch(err => {
+    alert('❌ Ошибка: ' + err.message);
+  });
+}
+
+function toggleBusinessActive(businessId, isActive) {
+  fetch(\`/api/businesses/\${businessId}\`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+    },
+    body: JSON.stringify({ is_active: isActive })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      loadBusinesses();
+    } else {
+      alert('❌ Ошибка: ' + data.error);
+    }
+  })
+  .catch(err => {
+    alert('❌ Ошибка: ' + err.message);
+  });
+}
+
+function deleteBusiness(businessId, companyName) {
+  if (!confirm(\`Вы уверены, что хотите удалить компанию "\${companyName}"?\`)) {
+    return;
+  }
+  
+  fetch(\`/api/businesses/\${businessId}\`, {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Компания удалена');
+      loadBusinesses();
+    } else {
+      alert('❌ Ошибка: ' + data.error);
+    }
+  })
+  .catch(err => {
+    alert('❌ Ошибка: ' + err.message);
+  });
+}
+
+function updateBusinessSelector(businessList) {
+  const selector = document.getElementById('currentBusiness');
+  const activeBusinesses = businessList.filter(b => b.is_active === 1);
+  
+  if (activeBusinesses.length === 0) {
+    selector.innerHTML = '<option value="">Нет активных компаний</option>';
+    selector.disabled = true;
+    return;
+  }
+  
+  selector.disabled = false;
+  selector.innerHTML = activeBusinesses.map(b => 
+    \`<option value="\${b.id}">\${b.company_name}</option>\`
+  ).join('');
+  
+  // Устанавливаем первую активную компанию как текущую
+  if (!currentBusinessId || !activeBusinesses.find(b => b.id === currentBusinessId)) {
+    currentBusinessId = activeBusinesses[0].id;
+    selector.value = currentBusinessId;
+  }
+}
+
+function switchBusiness() {
+  currentBusinessId = parseInt(document.getElementById('currentBusiness').value);
+  // Перезагружаем данные для новой компании (если они были загружены)
+  console.log('Переключено на компанию ID:', currentBusinessId);
+}
+
+// Закрытие модалки при клике вне её
+document.getElementById('businessModal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    closeBusinessManager();
+  }
+});
+
+// Загружаем список компаний при загрузке страницы
+loadBusinesses();
+
+// ==================== МОДАЛКА СЕБЕСТОИМОСТИ ====================
+let costDataCache = []; // Кеш данных о себестоимости
+
+function openCostModal() {
+  if (!currentBusinessId) {
+    alert('❌ Сначала выберите компанию');
+    return;
+  }
+  document.getElementById('costModal').classList.add('active');
+}
+
+function closeCostModal() {
+  document.getElementById('costModal').classList.remove('active');
+}
+
+// Загрузка данных из WB API для текущей компании
+function loadCostData() {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const container = document.getElementById('costTableContainer');
+  container.innerHTML = '<p style="text-align:center;color:#636e72">⏳ Загрузка товаров...</p>';
+  
+  // Получаем API ключ из текущей выбранной компании
+  const business = businesses.find(b => b.id === currentBusinessId);
+  if (!business) {
+    container.innerHTML = '<p style="text-align:center;color:#d63031">❌ Компания не найдена</p>';
+    return;
+  }
+  
+  // Используем endpoint sales для получения списка товаров
+  const dateRange = getDateRange();
+  fetch(\`/api/wb-sales-grouped?businessId=\${currentBusinessId}&dateFrom=\${dateRange.dateFrom}&dateTo=\${dateRange.dateTo}\`, {
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(res => res.json())
+  .then(response => {
+    if (response.error) {
+      container.innerHTML = '<p style="text-align:center;color:#d63031">❌ ' + response.error + '</p>';
+      return;
+    }
+    
+    if (!response.data || response.data.length === 0) {
+      container.innerHTML = '<p style="text-align:center;color:#636e72">Нет данных за выбранный период</p>';
+      return;
+    }
+    
+    // Формируем данные для таблицы
+    costDataCache = response.data.map(item => ({
+      nmId: item.nmId,
+      subject: item.subject || '—',
+      brand: item.brand || '—',
+      cost: 0 // Себестоимость заполняется вручную
+    }));
+    
+    // Загружаем сохранённые себестоимости из БД
+    loadSavedCosts();
+  })
+  .catch(err => {
+    container.innerHTML = '<p style="text-align:center;color:#d63031">❌ Ошибка: ' + err.message + '</p>';
+  });
+}
+
+// Загрузка сохранённых себестоимостей из БД
+function loadSavedCosts() {
+  if (!currentBusinessId) return;
+  
+  fetch(\`/api/product-costs/\${currentBusinessId}\`, {
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success && data.costs) {
+      // Обновляем себестоимости в кеше из БД
+      data.costs.forEach(savedCost => {
+        const item = costDataCache.find(c => c.nmId == savedCost.nm_id);
+        if (item) {
+          item.cost = savedCost.cost;
+        }
+      });
+    }
+    renderCostTable();
+  })
+  .catch(err => {
+    console.error('Ошибка загрузки себестоимостей:', err);
+    renderCostTable(); // Рендерим таблицу даже при ошибке
+  });
+}
+
+// Отрисовка таблицы с данными
+function renderCostTable() {
+  const container = document.getElementById('costTableContainer');
+  
+  let html = \`
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden">
+      <thead>
+        <tr style="background:#f8f9fa">
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Артикул WB</th>
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Предмет</th>
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Бренд</th>
+          <th style="padding:12px;text-align:right;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Себестоимость (₽)</th>
+        </tr>
+      </thead>
+      <tbody>
+  \`;
+  
+  costDataCache.forEach((item, index) => {
+    html += \`
+      <tr style="border-bottom:1px solid #f1f3f5">
+        <td style="padding:12px;color:#2d3436;font-weight:500">\${item.nmId}</td>
+        <td style="padding:12px;color:#636e72">\${item.subject}</td>
+        <td style="padding:12px;color:#636e72">\${item.brand}</td>
+        <td style="padding:12px;text-align:right">
+          <input 
+            type="number" 
+            id="cost_\${index}"
+            value="\${item.cost || ''}"
+            onchange="updateCost(\${index}, this.value)"
+            placeholder="0"
+            style="width:120px;padding:6px 10px;border:2px solid #dfe6e9;border-radius:6px;text-align:right;font-size:14px"
+          />
+        </td>
+      </tr>
+    \`;
+  });
+  
+  html += \`
+      </tbody>
+    </table>
+  \`;
+  
+  container.innerHTML = html;
+}
+
+// Обновление себестоимости в кеше
+function updateCost(index, value) {
+  if (costDataCache[index]) {
+    costDataCache[index].cost = parseFloat(value) || 0;
+  }
+}
+
+// Сохранение данных себестоимости
+function saveCostData() {
+  if (costDataCache.length === 0) {
+    alert('❌ Нет данных для сохранения. Сначала загрузите данные.');
+    return;
+  }
+  
+  if (!currentBusinessId) {
+    alert('❌ Компания не выбрана');
+    return;
+  }
+  
+  // Отправляем данные на сервер
+  fetch(\`/api/product-costs/\${currentBusinessId}/bulk\`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+    },
+    body: JSON.stringify({ products: costDataCache })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      alert(\`✅ \${data.message}\`);
+    } else {
+      alert('❌ Ошибка: ' + data.error);
     }
   })
   .catch(err => {
@@ -1134,18 +1909,216 @@ function saveApiKey(event) {
 }
 
 // Закрытие модалки при клике вне её
-document.getElementById('apiModal').addEventListener('click', function(e) {
+document.getElementById('costModal').addEventListener('click', function(e) {
   if (e.target === this) {
-    closeApiModal();
+    closeCostModal();
   }
 });
 
+// Устанавливаем даты по умолчанию (последние 30 дней)
+window.addEventListener('DOMContentLoaded', function() {
+  const dateTo = new Date();
+  const dateFrom = new Date();
+  dateFrom.setDate(dateFrom.getDate() - 30);
+  
+  document.getElementById('dateTo').value = dateTo.toISOString().split('T')[0];
+  document.getElementById('dateFrom').value = dateFrom.toISOString().split('T')[0];
+});
+
+// Переменная для хранения выбранного типа отчета
+let selectedReportType = null;
+
+// Функция переключения типа отчета
+function toggleReportType(type) {
+  const btnFinReport = document.getElementById('btnFinReport');
+  const btnSalesReport = document.getElementById('btnSalesReport');
+  const datasetContainer = document.getElementById('datasetContainer');
+  
+  // Сбрасываем стили всех кнопок
+  const resetButton = (btn) => {
+    btn.style.background = '#fff';
+    btn.style.color = '#2d3436';
+    btn.style.border = '2px solid #dfe6e9';
+    btn.style.transform = 'none';
+    btn.style.boxShadow = 'none';
+  };
+  
+  if (selectedReportType === type) {
+    // Снимаем выбор
+    selectedReportType = null;
+    resetButton(btnFinReport);
+    resetButton(btnSalesReport);
+    datasetContainer.style.display = 'none';
+  } else {
+    // Сначала сбрасываем все кнопки
+    resetButton(btnFinReport);
+    resetButton(btnSalesReport);
+    
+    // Выбираем нужную кнопку
+    selectedReportType = type;
+    const activeBtn = type === 'finReport' ? btnFinReport : btnSalesReport;
+    const gradient = type === 'finReport' 
+      ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' 
+      : 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)';
+    const borderColor = type === 'finReport' ? '#667eea' : '#f093fb';
+    
+    activeBtn.style.background = gradient;
+    activeBtn.style.color = '#fff';
+    activeBtn.style.border = '2px solid ' + borderColor;
+    activeBtn.style.transform = 'translateY(-2px)';
+    activeBtn.style.boxShadow = '0 4px 12px rgba(102,126,234,0.4)';
+    datasetContainer.style.display = 'block';
+    
+    // Обновляем заголовок таблицы
+    updateDatasetHeader(type);
+  }
+}
+
+// Обновление заголовка датасета
+function updateDatasetHeader(type) {
+  const thead = document.getElementById('datasetHeader');
+  
+  if (type === 'salesReport') {
+    // Заголовки для отчёта по продажам
+    thead.innerHTML = '<tr style="background:#f8f9fa">' +
+      '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Артикул WB</th>' +
+      '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Предмет</th>' +
+      '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Бренд</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Кол-во продаж</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Общая выручка</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Комиссия</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Логистика</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Прибыль</th>' +
+      '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Средняя цена</th>' +
+      '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Склад</th>' +
+      '</tr>';
+  } else if (type === 'finReport') {
+    // Полный заголовок для финансового отчёта (все 82 колонки)
+    const thStyle = 'padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px';
+    const thStyleRight = 'padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px';
+    
+    thead.innerHTML = '<tr style="background:#f8f9fa">' +
+      '<th style="' + thStyle + '">Номер отчёта</th>' +
+      '<th style="' + thStyle + '">Дата начала</th>' +
+      '<th style="' + thStyle + '">Дата конца</th>' +
+      '<th style="' + thStyle + '">Дата создания</th>' +
+      '<th style="' + thStyle + '">Валюта</th>' +
+      '<th style="' + thStyle + '">ID строки</th>' +
+      '<th style="' + thStyle + '">GI ID</th>' +
+      '<th style="' + thStyleRight + '">% доставки</th>' +
+      '<th style="' + thStyle + '">Тариф дата с</th>' +
+      '<th style="' + thStyle + '">Тариф дата по</th>' +
+      '<th style="' + thStyle + '">Предмет</th>' +
+      '<th style="' + thStyle + '">Артикул WB</th>' +
+      '<th style="' + thStyle + '">Бренд</th>' +
+      '<th style="' + thStyle + '">Артикул продавца</th>' +
+      '<th style="' + thStyle + '">Размер</th>' +
+      '<th style="' + thStyle + '">Баркод</th>' +
+      '<th style="' + thStyle + '">Тип документа</th>' +
+      '<th style="' + thStyleRight + '">Кол-во</th>' +
+      '<th style="' + thStyleRight + '">Цена розничная</th>' +
+      '<th style="' + thStyleRight + '">Сумма продажи</th>' +
+      '<th style="' + thStyleRight + '">% скидки</th>' +
+      '<th style="' + thStyleRight + '">% комиссии</th>' +
+      '<th style="' + thStyle + '">Склад</th>' +
+      '<th style="' + thStyle + '">Операция</th>' +
+      '<th style="' + thStyle + '">Дата заказа</th>' +
+      '<th style="' + thStyle + '">Дата продажи</th>' +
+      '<th style="' + thStyle + '">Дата отчёта</th>' +
+      '<th style="' + thStyle + '">ШК</th>' +
+      '<th style="' + thStyleRight + '">Розница со скидкой</th>' +
+      '<th style="' + thStyleRight + '">Стоимость доставки</th>' +
+      '<th style="' + thStyleRight + '">Сумма возврата</th>' +
+      '<th style="' + thStyleRight + '">Доставка руб</th>' +
+      '<th style="' + thStyle + '">Тип коробки</th>' +
+      '<th style="' + thStyleRight + '">Скидка товара</th>' +
+      '<th style="' + thStyleRight + '">Промо продавца</th>' +
+      '<th style="' + thStyleRight + '">% СПП</th>' +
+      '<th style="' + thStyleRight + '">% КВВ база</th>' +
+      '<th style="' + thStyleRight + '">% КВВ</th>' +
+      '<th style="' + thStyleRight + '">Рейтинг %</th>' +
+      '<th style="' + thStyleRight + '">КГВП v2</th>' +
+      '<th style="' + thStyleRight + '">Комиссия продаж</th>' +
+      '<th style="' + thStyleRight + '">К перечислению</th>' +
+      '<th style="' + thStyleRight + '">Вознаграждение</th>' +
+      '<th style="' + thStyleRight + '">Эквайринг</th>' +
+      '<th style="' + thStyleRight + '">% эквайринга</th>' +
+      '<th style="' + thStyle + '">Обработка платежа</th>' +
+      '<th style="' + thStyle + '">Банк эквайринга</th>' +
+      '<th style="' + thStyleRight + '">Вознаграждение WB</th>' +
+      '<th style="' + thStyleRight + '">НДС вознагр</th>' +
+      '<th style="' + thStyle + '">Офис</th>' +
+      '<th style="' + thStyle + '">ID офиса</th>' +
+      '<th style="' + thStyle + '">ID продавца</th>' +
+      '<th style="' + thStyle + '">Название продавца</th>' +
+      '<th style="' + thStyle + '">ИНН</th>' +
+      '<th style="' + thStyle + '">№ декларации</th>' +
+      '<th style="' + thStyle + '">Тип бонуса</th>' +
+      '<th style="' + thStyle + '">ID стикера</th>' +
+      '<th style="' + thStyle + '">Страна сайта</th>' +
+      '<th style="' + thStyle + '">DBS</th>' +
+      '<th style="' + thStyleRight + '">Штраф</th>' +
+      '<th style="' + thStyleRight + '">Доп. платёж</th>' +
+      '<th style="' + thStyleRight + '">Ребилл логистика</th>' +
+      '<th style="' + thStyle + '">Ребилл орг</th>' +
+      '<th style="' + thStyleRight + '">Хранение</th>' +
+      '<th style="' + thStyleRight + '">Удержание</th>' +
+      '<th style="' + thStyleRight + '">Приёмка</th>' +
+      '<th style="' + thStyle + '">ID сборки</th>' +
+      '<th style="' + thStyle + '">КИЗ</th>' +
+      '<th style="' + thStyle + '">SRID</th>' +
+      '<th style="' + thStyle + '">Тип отчёта</th>' +
+      '<th style="' + thStyle + '">Юрлицо</th>' +
+      '<th style="' + thStyle + '">TRBX ID</th>' +
+      '<th style="' + thStyleRight + '">Рассрочка</th>' +
+      '<th style="' + thStyleRight + '">% скидки WIBES</th>' +
+      '<th style="' + thStyleRight + '">Кэшбэк сумма</th>' +
+      '<th style="' + thStyleRight + '">Кэшбэк скидка</th>' +
+      '<th style="' + thStyleRight + '">Кэшбэк комиссия</th>' +
+      '<th style="' + thStyle + '">UID заказа</th>' +
+      '<th style="' + thStyle + '">График платежей</th>' +
+      '</tr>';
+  }
+}
+
+// Получить выбранные даты
+function getDateRange() {
+  const dateFrom = document.getElementById('dateFrom').value;
+  const dateTo = document.getElementById('dateTo').value;
+  
+  if (!dateFrom || !dateTo) {
+    alert('⚠️ Пожалуйста, выберите период');
+    return null;
+  }
+  
+  return { dateFrom, dateTo };
+}
+
 // Загрузка финансовых данных
 function loadFinancialData() {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const dateRange = getDateRange();
+  if (!dateRange) return;
+  
+  // Проверяем выбран ли тип отчёта
+  if (selectedReportType === 'finReport') {
+    loadFullFinReport(dateRange);
+    return;
+  }
+  
+  if (selectedReportType === 'salesReport') {
+    loadSalesReport(dateRange);
+    return;
+  }
+  
   const tbody = document.getElementById('finTableBody');
   tbody.innerHTML = '<tr><td colspan="8" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка данных...</td></tr>';
   
-  fetch('/api/wb-finance', {
+  fetch('/api/wb-finance?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
     headers: {
       'Authorization': 'Bearer ' + localStorage.getItem('authToken')
     }
@@ -1165,10 +2138,18 @@ function loadFinancialData() {
 }
 
 function loadSales() {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const dateRange = getDateRange();
+  if (!dateRange) return;
+  
   const tbody = document.getElementById('finTableBody');
   tbody.innerHTML = '<tr><td colspan="8" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка продаж...</td></tr>';
   
-  fetch('/api/wb-sales', {
+  fetch('/api/wb-sales?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
     headers: {
       'Authorization': 'Bearer ' + localStorage.getItem('authToken')
     }
@@ -1188,10 +2169,18 @@ function loadSales() {
 }
 
 function loadOrders() {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const dateRange = getDateRange();
+  if (!dateRange) return;
+  
   const tbody = document.getElementById('finTableBody');
   tbody.innerHTML = '<tr><td colspan="8" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка заказов...</td></tr>';
   
-  fetch('/api/wb-orders', {
+  fetch('/api/wb-orders?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
     headers: {
       'Authorization': 'Bearer ' + localStorage.getItem('authToken')
     }
@@ -1208,6 +2197,236 @@ function loadOrders() {
   .catch(err => {
     tbody.innerHTML = '<tr><td colspan="8" style="padding:40px;text-align:center;color:#d63031">❌ Ошибка загрузки: ' + err.message + '</td></tr>';
   });
+}
+
+// Загрузка отчёта по продажам (уникальные артикулы)
+function loadSalesReport(dateRange) {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const tbody = document.getElementById('datasetBody');
+  tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка отчёта по продажам...</td></tr>';
+  
+  fetch('/api/wb-sales-grouped?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+    }
+  })
+  .then(res => res.json())
+  .then(response => {
+    if (response.error) {
+      tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#d63031">❌ ' + response.error + '</td></tr>';
+      return;
+    }
+    
+    displaySalesReport(response.data);
+  })
+  .catch(err => {
+    tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#d63031">❌ Ошибка загрузки: ' + err.message + '</td></tr>';
+  });
+}
+
+// Отображение отчёта по продажам (уникальные артикулы)
+function displaySalesReport(data) {
+  const tbody = document.getElementById('datasetBody');
+  
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:40px;text-align:center;color:#636e72">Нет данных за выбранный период</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = '';
+  data.forEach(item => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f1f3f5';
+    tr.innerHTML = 
+      '<td style="padding:12px;font-size:14px;font-weight:600">' + (item.nmId || '—') + '</td>' +
+      '<td style="padding:12px;font-size:14px">' + (item.subject || '—') + '</td>' +
+      '<td style="padding:12px;font-size:14px">' + (item.brand || '—') + '</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;font-weight:600;color:#00b894">' + (item.quantity || 0) + '</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px">' + (item.totalRevenue || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;color:#d63031">' + (item.totalCommission || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;color:#e17055">' + (item.totalLogistics || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;font-weight:600;color:#00b894">' + (item.totalProfit || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px">' + (item.avgPrice || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;font-size:13px;color:#636e72">' + (item.warehouseName || '—') + '</td>';
+    tbody.appendChild(tr);
+  });
+  
+  // Обновляем карточки статистики
+  let totalRevenue = 0, totalCommission = 0, totalLogistics = 0, totalProfit = 0;
+  data.forEach(item => {
+    totalRevenue += item.totalRevenue || 0;
+    totalCommission += item.totalCommission || 0;
+    totalLogistics += item.totalLogistics || 0;
+    totalProfit += item.totalProfit || 0;
+  });
+  
+  document.getElementById('totalRevenue').textContent = totalRevenue.toFixed(2) + ' ₽';
+  document.getElementById('totalCommission').textContent = '-' + totalCommission.toFixed(2) + ' ₽';
+  document.getElementById('totalLogistics').textContent = totalLogistics.toFixed(2) + ' ₽';
+  document.getElementById('netProfit').textContent = totalProfit.toFixed(2) + ' ₽';
+  document.getElementById('pureProfit').textContent = '—';
+}
+
+// Загрузка полного финансового отчёта WB
+function loadFullFinReport(dateRange) {
+  if (!currentBusinessId) {
+    alert('❌ Выберите компанию');
+    return;
+  }
+  
+  const tbody = document.getElementById('datasetBody');
+  tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка финансового отчёта...</td></tr>';
+  
+  fetch('/api/wb-fin-report?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+    }
+  })
+  .then(res => res.json())
+  .then(response => {
+    if (response.error) {
+      tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#d63031">❌ ' + response.error + '</td></tr>';
+      return;
+    }
+    
+    displayFullFinReport(response.data);
+  })
+  .catch(err => {
+    tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#d63031">❌ Ошибка загрузки: ' + err.message + '</td></tr>';
+  });
+}
+
+// Отображение полного финансового отчёта
+function displayFullFinReport(data) {
+  const tbody = document.getElementById('datasetBody');
+  
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">Нет данных за выбранный период</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = '';
+  data.forEach(item => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #f1f3f5';
+    tr.innerHTML = 
+      '<td style="padding:8px 12px;font-size:13px">' + (item.realizationreport_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.date_from || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.date_to || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.create_dt || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.currency_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.rrd_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.dlv_prc || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.fix_tariff_date_from || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.fix_tariff_date_to || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.subject_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.nm_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.brand_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.sa_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ts_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.barcode || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.doc_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.quantity || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600">' + (item.retail_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sale_percent || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.commission_percent || 0) + '%</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.office_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.supplier_oper_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.order_dt ? new Date(item.order_dt).toLocaleDateString('ru-RU') : '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.sale_dt ? new Date(item.sale_dt).toLocaleDateString('ru-RU') : '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.rr_dt || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.shk_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price_withdisc_rub || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.return_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_rub || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_box_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.product_discount_for_report || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.supplier_promo || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_spp_prc || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc_base || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sup_rating_prc_up || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.is_kgvp_v2 || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#d63031">' + (item.ppvz_sales_commission || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600;color:#00b894">' + (item.ppvz_for_pay || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_reward || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#e17055">' + (item.acquiring_fee || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acquiring_percent || 0) + '%</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.payment_processing || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.acquiring_bank || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_vw || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_vw_nds || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_supplier_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_supplier_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_inn || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.declaration_number || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.bonus_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.sticker_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.site_country || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.srv_dbs ? 'Да' : 'Нет') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#d63031">' + (item.penalty || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.additional_payment || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.rebill_logistic_cost || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.rebill_logistic_org || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#e17055">' + (item.storage_fee || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.deduction || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acceptance || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.assembly_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis">' + (item.kiz || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.srid || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.is_legal_entity ? 'Да' : 'Нет') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.trbx_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.installment_cofinancing_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.wibes_wb_discount_percent || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_discount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_commission_change || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.order_uid || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.payment_schedule || '—') + '</td>';
+    tbody.appendChild(tr);
+  });
+  
+  // Обновляем карточки статистики на основе ПРАВИЛЬНЫХ данных WB
+  let totalRevenue = 0;        // Общая выручка (что заплатили покупатели)
+  let totalCommission = 0;     // Комиссия WB
+  let totalLogistics = 0;      // Логистика + хранение + эквайринг + штрафы
+  let totalForPay = 0;         // К перечислению (то что придёт на счёт)
+  
+  data.forEach(item => {
+    // Выручка = сумма продажи (retail_amount) * количество
+    totalRevenue += (item.retail_amount || 0) * (item.quantity || 1);
+    
+    // Комиссия WB
+    totalCommission += (item.ppvz_sales_commission || 0);
+    
+    // Все затраты: логистика, хранение, эквайринг, штрафы, удержания, приёмка
+    totalLogistics += (item.delivery_rub || 0) + 
+                      (item.storage_fee || 0) + 
+                      (item.acquiring_fee || 0) + 
+                      (item.penalty || 0) + 
+                      (item.deduction || 0) + 
+                      (item.acceptance || 0);
+    
+    // К ПЕРЕЧИСЛЕНИЮ - это уже чистая сумма от WB (они всё вычли)
+    totalForPay += (item.ppvz_for_pay || 0);
+  });
+  
+  // Обновляем карточки
+  document.getElementById('totalRevenue').textContent = totalRevenue.toFixed(2) + ' ₽';
+  document.getElementById('totalCommission').textContent = '-' + totalCommission.toFixed(2) + ' ₽';
+  document.getElementById('totalLogistics').textContent = totalLogistics.toFixed(2) + ' ₽';
+  document.getElementById('netProfit').textContent = totalForPay.toFixed(2) + ' ₽';
+  document.getElementById('pureProfit').textContent = '—';
 }
 
 function displayFinancialData(data) {
