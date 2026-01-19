@@ -17,3 +17,4 @@ wb-service.db-wal
 
 # Dependencies
 node_modules/
+package-lock.json/

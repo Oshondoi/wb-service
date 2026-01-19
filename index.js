@@ -1,24 +1,17 @@
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const db = require('./database');
+const syncService = require('./sync-service');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Загружаем базу юридических лиц продавцов
-let SELLERS_DB = {};
-try {
-  const dbPath = path.join(__dirname, 'sellers-db.json');
-  SELLERS_DB = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-  console.log(`Загружено ${Object.keys(SELLERS_DB).length} продавцов в базу`);
-} catch (err) {
-  console.warn('База продавцов не загружена:', err.message);
-}
 
 // Кэш для юридических лиц (чтобы не парсить одного продавца несколько раз)
 const LEGAL_NAMES_CACHE = new Map();
@@ -58,13 +51,13 @@ const randomDelay = (minSec, maxSec) => {
 };
 
 // Middleware для проверки авторизации через БД
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   // Проверяем токен в cookie
   const token = req.cookies?.authToken;
   if (token) {
     try {
       const accountId = parseInt(token, 10);
-      const account = db.getAccountById(accountId);
+      const account = await db.getAccountById(accountId);
       if (account) {
         // Прикрепляем информацию об аккаунте к запросу
         req.account = account;
@@ -81,7 +74,7 @@ function requireAuth(req, res, next) {
     const bearerToken = authHeader.substring(7);
     try {
       const accountId = parseInt(bearerToken, 10);
-      const account = db.getAccountById(accountId);
+      const account = await db.getAccountById(accountId);
       if (account) {
         req.account = account;
         return next();
@@ -165,11 +158,11 @@ document.getElementById('loginForm').onsubmit = function(e) {
 });
 
 // API для входа
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { login, password } = req.body;
   
   // Проверяем логин/пароль через БД
-  const account = db.authenticateAccount(login, password);
+  const account = await db.authenticateAccount(login, password);
   
   if (account) {
     // Создаём токен (ID аккаунта) и ставим в cookie
@@ -195,13 +188,13 @@ app.post('/api/login', (req, res) => {
   res.json({ success: false, message: 'Неверный логин или пароль' });
 });
 
-// ==================== API: УПРАВЛЕНИЕ КОМПАНИЯМИ ====================
+// ==================== API: УПРАВЛЕНИЕ МАГАЗИНАМИ ====================
 
-// Получить список компаний текущего аккаунта
-app.get('/api/businesses', requireAuth, (req, res) => {
+// Получить список магазинов текущего аккаунта
+app.get('/api/businesses', requireAuth, async (req, res) => {
   try {
-    const businesses = db.getBusinessesByAccount(req.account.id);
-    const stats = db.getAccountStats(req.account.id);
+    const businesses = await db.getBusinessesByAccount(req.account.id);
+    const stats = await db.getAccountStats(req.account.id);
     res.json({ success: true, businesses, stats });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -209,7 +202,7 @@ app.get('/api/businesses', requireAuth, (req, res) => {
 });
 
 // Создать новую компанию
-app.post('/api/businesses', requireAuth, (req, res) => {
+app.post('/api/businesses', requireAuth, async (req, res) => {
   const { company_name, wb_api_key, description } = req.body;
   
   if (!company_name || !wb_api_key) {
@@ -217,20 +210,27 @@ app.post('/api/businesses', requireAuth, (req, res) => {
   }
   
   try {
-    const business = db.createBusiness(req.account.id, company_name, wb_api_key, description);
-    res.json({ success: true, business });
+    const business = await db.createBusiness(req.account.id, company_name, wb_api_key, description);
+    
+    // 🔄 Запускаем начальную синхронизацию в фоне (загрузка ВСЕЙ истории WB)
+    syncService.syncAllData(business.id, business.wb_api_key)
+      .then(() => console.log(`✅ Начальная синхронизация завершена для магазина ${business.id}`))
+      .catch(err => console.error(`❌ Ошибка начальной синхронизации для магазина ${business.id}:`, err.message));
+    
+    res.json({ success: true, business, message: 'Магазин создан, синхронизация данных запущена' });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
 // Обновить данные компании
-app.put('/api/businesses/:id', requireAuth, (req, res) => {
+app.put('/api/businesses/:id', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.id);
   const { company_name, wb_api_key, description, is_active } = req.body;
   
   // Проверяем, что компания принадлежит текущему аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
@@ -239,38 +239,39 @@ app.put('/api/businesses/:id', requireAuth, (req, res) => {
     if (company_name !== undefined) updates.company_name = company_name;
     if (wb_api_key !== undefined) updates.wb_api_key = wb_api_key;
     if (description !== undefined) updates.description = description;
-    if (is_active !== undefined) updates.is_active = is_active ? 1 : 0;
+    if (is_active !== undefined) updates.is_active = is_active ? true : false;
     
-    const success = db.updateBusiness(businessId, updates);
-    res.json({ success, message: success ? 'Компания обновлена' : 'Компания не найдена' });
+    const success = await db.updateBusiness(businessId, updates);
+    res.json({ success, message: success ? 'Магазин обновлён' : 'Магазин не найден' });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// Удалить компанию
-app.delete('/api/businesses/:id', requireAuth, (req, res) => {
+// Удалить магазин
+app.delete('/api/businesses/:id', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.id);
-  
-  // Проверяем, что компания принадлежит текущему аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+
+  // Проверяем, что магазин принадлежит текущему аккаунту
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
   try {
-    const success = db.deleteBusiness(businessId);
-    res.json({ success, message: success ? 'Компания удалена' : 'Компания не найдена' });
+    const success = await db.deleteBusiness(businessId);
+    res.json({ success, message: success ? 'Магазин удалён' : 'Магазин не найден' });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
 // Получить компанию по умолчанию (для fin-report)
-app.get('/api/businesses/default', requireAuth, (req, res) => {
+app.get('/api/businesses/default', requireAuth, async (req, res) => {
   try {
-    const business = db.getDefaultBusiness(req.account.id);
+    const business = await db.getDefaultBusiness(req.account.id);
     if (!business) {
-      return res.json({ success: false, error: 'Нет активных компаний. Создайте компанию.' });
+      return res.json({ success: false, error: 'Нет активных магазинов. Создайте магазин.' });
     }
     res.json({ success: true, business });
   } catch (error) {
@@ -280,17 +281,18 @@ app.get('/api/businesses/default', requireAuth, (req, res) => {
 
 // ==================== API: СЕБЕСТОИМОСТЬ ====================
 
-// Получить себестоимость всех товаров компании
-app.get('/api/product-costs/:businessId', requireAuth, (req, res) => {
+// Получить себестоимость всех товаров магазина
+app.get('/api/product-costs/:businessId', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.businessId);
-  
-  // Проверяем принадлежность компании к аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+
+  // Проверяем принадлежность магазина к аккаунту
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
   try {
-    const costs = db.getProductCostsByBusiness(businessId);
+    const costs = await db.getProductCostsByBusiness(businessId);
     res.json({ success: true, costs });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -298,12 +300,13 @@ app.get('/api/product-costs/:businessId', requireAuth, (req, res) => {
 });
 
 // Массовое сохранение себестоимости
-app.post('/api/product-costs/:businessId/bulk', requireAuth, (req, res) => {
+app.post('/api/product-costs/:businessId/bulk', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.businessId);
   const { products } = req.body;
   
   // Проверяем принадлежность компании к аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
@@ -312,7 +315,7 @@ app.post('/api/product-costs/:businessId/bulk', requireAuth, (req, res) => {
   }
   
   try {
-    const count = db.bulkUpsertProductCosts(businessId, products);
+    const count = await db.bulkUpsertProductCosts(businessId, products);
     res.json({ success: true, count, message: `Сохранено ${count} позиций` });
   } catch (error) {
     res.json({ success: false, error: error.message });
@@ -320,17 +323,18 @@ app.post('/api/product-costs/:businessId/bulk', requireAuth, (req, res) => {
 });
 
 // Получить себестоимость конкретного товара
-app.get('/api/product-costs/:businessId/:nmId', requireAuth, (req, res) => {
+app.get('/api/product-costs/:businessId/:nmId', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.businessId);
   const nmId = req.params.nmId;
   
   // Проверяем принадлежность компании к аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
   try {
-    const cost = db.getProductCost(businessId, nmId);
+    const cost = await db.getProductCost(businessId, nmId);
     if (!cost) {
       return res.json({ success: false, error: 'Себестоимость не найдена' });
     }
@@ -341,40 +345,41 @@ app.get('/api/product-costs/:businessId/:nmId', requireAuth, (req, res) => {
 });
 
 // Удалить себестоимость товара
-app.delete('/api/product-costs/:businessId/:nmId', requireAuth, (req, res) => {
+app.delete('/api/product-costs/:businessId/:nmId', requireAuth, async (req, res) => {
   const businessId = parseInt(req.params.businessId);
   const nmId = req.params.nmId;
   
   // Проверяем принадлежность компании к аккаунту
-  if (!db.verifyBusinessOwnership(businessId, req.account.id)) {
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
     return res.json({ success: false, error: 'Доступ запрещён' });
   }
   
   try {
-    const success = db.deleteProductCost(businessId, nmId);
+    const success = await db.deleteProductCost(businessId, nmId);
     res.json({ success, message: success ? 'Себестоимость удалена' : 'Себестоимость не найдена' });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
 });
 
-// API для получения финансовых данных (продажи + заказы)
+// API для получения финансовых данных (продажи + заказы) из Supabase
 app.get('/api/wb-finance', requireAuth, async (req, res) => {
   // Получаем компанию из параметров или берём дефолтную
   const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
   let business;
   
   if (businessId) {
-    business = db.getBusinessById(businessId);
+    business = await db.getBusinessById(businessId);
     if (!business || business.account_id !== req.account.id) {
-      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+      return res.json({ error: 'Магазин не найден или доступ запрещён' });
     }
   } else {
-    business = db.getDefaultBusiness(req.account.id);
+    business = await db.getDefaultBusiness(req.account.id);
   }
   
   if (!business) {
-    return res.json({ error: 'Нет активных компаний. Создайте компанию через интерфейс управления.' });
+    return res.json({ error: 'Нет активных магазинов. Создайте магазин через интерфейс управления.' });
   }
 
   try {
@@ -382,34 +387,25 @@ app.get('/api/wb-finance', requireAuth, async (req, res) => {
     const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
     const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
-    // API WB для получения отчета о продажах
-    const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
-    
-    const response = await axios.get(salesUrl, {
-      headers: {
-        'Authorization': business.wb_api_key
-      },
-      timeout: 15000
-    });
-
-    const sales = response.data || [];
+    // 📊 Читаем данные из Supabase кэша
+    const sales = await db.getSalesFromCache(business.id, dateFromStr, dateToStr);
     
     // Обработка данных
     const items = sales.map(sale => {
-      const forPay = sale.forPay || 0;
+      const forPay = sale.for_pay || 0;
       const commission = (sale.commission_percent || 0) * forPay / 100;
       const logistics = sale.delivery_amount || 0;
       const profit = forPay - commission - logistics;
       
       return {
-        date: sale.date ? new Date(sale.date).toLocaleDateString('ru-RU') : '—',
-        nmId: sale.nmId,
+        date: sale.sale_dt ? new Date(sale.sale_dt).toLocaleDateString('ru-RU') : '—',
+        nmId: sale.nm_id,
         subject: sale.subject,
         forPay: forPay,
         commission: commission,
         logistics: logistics,
         profit: profit,
-        type: sale.saleID ? 'sale' : 'order'
+        type: sale.sale_id ? 'sale' : 'order'
       };
     });
 
@@ -428,46 +424,41 @@ app.get('/api/wb-finance', requireAuth, async (req, res) => {
   }
 });
 
-// API для получения продаж
+// API для получения продаж из Supabase
 app.get('/api/wb-sales', requireAuth, async (req, res) => {
   // Получаем компанию
   const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
   let business;
   
   if (businessId) {
-    business = db.getBusinessById(businessId);
+    business = await db.getBusinessById(businessId);
     if (!business || business.account_id !== req.account.id) {
-      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+      return res.json({ error: 'Магазин не найден или доступ запрещён' });
     }
   } else {
-    business = db.getDefaultBusiness(req.account.id);
+    business = await db.getDefaultBusiness(req.account.id);
   }
   
   if (!business) {
-    return res.json({ error: 'Нет активных компаний' });
+    return res.json({ error: 'Нет активных магазинов' });
   }
 
   try {
     const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
     const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
-    const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
-    
-    const response = await axios.get(salesUrl, {
-      headers: { 'Authorization': business.wb_api_key },
-      timeout: 15000
-    });
-
-    const sales = (response.data || []).filter(s => s.saleID);
+    // 📊 Читаем данные из Supabase кэша
+    const salesData = await db.getSalesFromCache(business.id, dateFromStr, dateToStr);
+    const sales = salesData.filter(s => s.sale_id); // Только продажи (не заказы)
     
     const items = sales.map(sale => ({
-      date: new Date(sale.date).toLocaleDateString('ru-RU'),
-      nmId: sale.nmId,
+      date: new Date(sale.sale_dt).toLocaleDateString('ru-RU'),
+      nmId: sale.nm_id,
       subject: sale.subject,
-      forPay: sale.forPay || 0,
-      commission: (sale.commission_percent || 0) * (sale.forPay || 0) / 100,
+      forPay: sale.for_pay || 0,
+      commission: (sale.commission_percent || 0) * (sale.for_pay || 0) / 100,
       logistics: sale.delivery_amount || 0,
-      profit: (sale.forPay || 0) - ((sale.commission_percent || 0) * (sale.forPay || 0) / 100) - (sale.delivery_amount || 0),
+      profit: (sale.for_pay || 0) - ((sale.commission_percent || 0) * (sale.for_pay || 0) / 100) - (sale.delivery_amount || 0),
       type: 'sale'
     }));
 
@@ -485,47 +476,40 @@ app.get('/api/wb-sales', requireAuth, async (req, res) => {
   }
 });
 
-// API для получения заказов
+// API для получения заказов из Supabase
 app.get('/api/wb-orders', requireAuth, async (req, res) => {
   // Получаем компанию
   const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
   let business;
   
   if (businessId) {
-    business = db.getBusinessById(businessId);
+    business = await db.getBusinessById(businessId);
     if (!business || business.account_id !== req.account.id) {
-      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+      return res.json({ error: 'Магазин не найден или доступ запрещён' });
     }
   } else {
-    business = db.getDefaultBusiness(req.account.id);
+    business = await db.getDefaultBusiness(req.account.id);
   }
   
   if (!business) {
-    return res.json({ error: 'Нет активных компаний' });
+    return res.json({ error: 'Нет активных магазинов' });
   }
 
   try {
     const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
     const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
     
-    // flag=1 возвращает все заказы (новые и старые)
-    const ordersUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/orders?dateFrom=${dateFromStr}&flag=1`;
-    
-    const response = await axios.get(ordersUrl, {
-      headers: { 'Authorization': business.wb_api_key },
-      timeout: 30000 // Увеличил timeout до 30 секунд
-    });
-
-    const orders = response.data || [];
+    // 📊 Читаем данные из Supabase кэша
+    const orders = await db.getOrdersFromCache(business.id, dateFromStr, dateToStr);
     
     const items = orders.map(order => ({
-      date: new Date(order.date).toLocaleDateString('ru-RU'),
-      nmId: order.nmId,
+      date: new Date(order.order_dt).toLocaleDateString('ru-RU'),
+      nmId: order.nm_id,
       subject: order.subject,
-      forPay: order.totalPrice || 0,
+      forPay: order.total_price || 0,
       commission: 0,
       logistics: 0,
-      profit: order.totalPrice || 0,
+      profit: order.total_price || 0,
       type: 'order'
     }));
 
@@ -548,78 +532,125 @@ app.get('/api/wb-sales-grouped', requireAuth, async (req, res) => {
   // Получаем компанию
   const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
   let business;
-  
+
   if (businessId) {
-    business = db.getBusinessById(businessId);
+    business = await db.getBusinessById(businessId);
     if (!business || business.account_id !== req.account.id) {
-      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+      return res.json({ error: 'Магазин не найден или доступ запрещён' });
     }
   } else {
-    business = db.getDefaultBusiness(req.account.id);
+    business = await db.getDefaultBusiness(req.account.id);
   }
-  
+
   if (!business) {
-    return res.json({ error: 'Нет активных компаний' });
+    return res.json({ error: 'Нет активных магазинов' });
   }
 
   try {
     const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
     const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
-    
-    const salesUrl = `https://statistics-api.wildberries.ru/api/v1/supplier/sales?dateFrom=${dateFromStr}`;
-    
-    const response = await axios.get(salesUrl, {
-      headers: { 'Authorization': business.wb_api_key },
-      timeout: 15000
-    });
 
-    const sales = (response.data || []).filter(s => s.saleID);
+    // 📊 Читаем финансовый отчёт из Supabase кэша (вместо обращения к WB API)
+    console.log(`📊 Загрузка данных из Supabase для магазина ${business.id}, период ${dateFromStr} - ${dateToStr}`);
+    const finReportData = await db.getFinancialReportFromCache(business.id, dateFromStr, dateToStr);
     
-    // Группируем по nmId (артикул WB)
+    console.log(`📊 Получено ${finReportData.length} записей из Supabase`);
+
+    // Группируем данные из финансового отчёта
     const groupedMap = {};
-    
-    sales.forEach(sale => {
-      const nmId = sale.nmId;
-      
+
+    finReportData.forEach(item => {
+      const nmId = item.nm_id;
+      if (!nmId) return;
+
       if (!groupedMap[nmId]) {
         groupedMap[nmId] = {
           nmId: nmId,
-          subject: sale.subject || '—',
-          brand: sale.brand || '—',
+          subject: item.subject_name || '—',
+          brand: item.brand_name || '—',
           quantity: 0,
           totalRevenue: 0,
           totalCommission: 0,
           totalLogistics: 0,
           totalProfit: 0,
+          totalForPay: 0,
           prices: [],
-          warehouseName: sale.warehouseName || '—'
+          warehouseName: item.office_name || '—'
         };
       }
-      
-      const retailAmount = sale.retail_amount || sale.priceWithDisc || sale.finishedPrice || 0;
-      const commission = sale.ppvz_sales_commission || 0;
-      const logistics = (sale.delivery_rub || 0) + 
-                       (sale.storage_fee || 0) + 
-                       (sale.acquiring_fee || 0) + 
-                       (sale.penalty || 0) + 
-                       (sale.deduction || 0) + 
-                       (sale.acceptance || 0);
+
+      const quantity = Number(item.quantity || 1);
+      const retailAmount = Number(item.retail_amount || 0);
+      const commission = Number(item.ppvz_sales_commission || 0);
+      const logistics = Number(item.delivery_rub || 0) +
+                       Number(item.storage_fee || 0) +
+                       Number(item.acquiring_fee || 0) +
+                       Number(item.penalty || 0) +
+                       Number(item.deduction || 0) +
+                       Number(item.acceptance || 0);
       const profit = retailAmount - commission - logistics;
-      
-      groupedMap[nmId].quantity += 1;
+      const forPay = Number(item.ppvz_for_pay || 0); // К перечислению из fin report
+
+      groupedMap[nmId].quantity += quantity;
       groupedMap[nmId].totalRevenue += retailAmount;
       groupedMap[nmId].totalCommission += commission;
       groupedMap[nmId].totalLogistics += logistics;
       groupedMap[nmId].totalProfit += profit;
+      groupedMap[nmId].totalForPay += forPay;
       groupedMap[nmId].prices.push(retailAmount);
     });
+
+    // Если данных нет, пробуем взять из wb_sales (продажи)
+    if (Object.keys(groupedMap).length === 0) {
+      console.log('📊 FinReport пустой, пробуем загрузить из wb_sales...');
+      const salesData = await db.getSalesFromCache(business.id, dateFromStr, dateToStr);
+      
+      salesData.forEach(sale => {
+        const nmId = sale.nm_id;
+
+        if (!groupedMap[nmId]) {
+          groupedMap[nmId] = {
+            nmId: nmId,
+            subject: sale.subject || '—',
+            brand: sale.brand || '—',
+            quantity: 0,
+            totalRevenue: 0,
+            totalCommission: 0,
+            totalLogistics: 0,
+            totalProfit: 0,
+            totalForPay: 0,
+            prices: [],
+            warehouseName: sale.warehouse_name || '—'
+          };
+        }
+
+        const retailAmount = sale.total_price || sale.price_with_disc || sale.finished_price || 0;
+        const commission = sale.ppvz_sales_commission || 0;
+        const logistics = (sale.delivery_rub || 0) +
+                         (sale.storage_fee || 0) +
+                         (sale.acquiring_fee || 0) +
+                         (sale.penalty || 0) +
+                         (sale.deduction || 0) +
+                         (sale.acceptance || 0);
+        const profit = retailAmount - commission - logistics;
+        const forPay = sale.ppvz_for_pay || (retailAmount - commission - logistics);
+
+        groupedMap[nmId].quantity += 1;
+        groupedMap[nmId].totalRevenue += retailAmount;
+        groupedMap[nmId].totalCommission += commission;
+        groupedMap[nmId].totalLogistics += logistics;
+        groupedMap[nmId].totalProfit += profit;
+        groupedMap[nmId].totalForPay += forPay;
+        groupedMap[nmId].prices.push(retailAmount);
+      });
+    }
     
     // Преобразуем в массив и считаем среднюю цену
     const groupedItems = Object.values(groupedMap).map(item => {
-      const avgPrice = item.prices.length > 0 
-        ? item.prices.reduce((sum, p) => sum + p, 0) / item.prices.length 
+      const avgPrice = item.prices.length > 0
+        ? item.prices.reduce((sum, p) => sum + p, 0) / item.prices.length
         : 0;
-      
+
       return {
         nmId: item.nmId,
         subject: item.subject,
@@ -629,6 +660,7 @@ app.get('/api/wb-sales-grouped', requireAuth, async (req, res) => {
         totalCommission: item.totalCommission,
         totalLogistics: item.totalLogistics,
         totalProfit: item.totalProfit,
+        totalForPay: item.totalForPay, // Сумма к перечислению
         avgPrice: avgPrice,
         warehouseName: item.warehouseName
       };
@@ -644,39 +676,31 @@ app.get('/api/wb-sales-grouped', requireAuth, async (req, res) => {
   }
 });
 
-// API для получения полного финансового отчёта WB (reportDetailByPeriod)
+// API для получения полного финансового отчёта из Supabase
 app.get('/api/wb-fin-report', requireAuth, async (req, res) => {
   // Получаем компанию
   const businessId = req.query.businessId ? parseInt(req.query.businessId) : null;
   let business;
   
   if (businessId) {
-    business = db.getBusinessById(businessId);
+    business = await db.getBusinessById(businessId);
     if (!business || business.account_id !== req.account.id) {
-      return res.json({ error: 'Компания не найдена или доступ запрещён' });
+      return res.json({ error: 'Магазин не найден или доступ запрещён' });
     }
   } else {
-    business = db.getDefaultBusiness(req.account.id);
+    business = await db.getDefaultBusiness(req.account.id);
   }
   
   if (!business) {
-    return res.json({ error: 'Нет активных компаний' });
+    return res.json({ error: 'Нет активных магазинов' });
   }
 
   try {
     const dateFromStr = req.query.dateFrom || new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
     const dateToStr = req.query.dateTo || new Date().toISOString().split('T')[0];
-    const limit = req.query.limit || 100000;
-    const rrdid = req.query.rrdid || 0;
     
-    const reportUrl = `https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod?dateFrom=${dateFromStr}&dateTo=${dateToStr}&limit=${limit}&rrdid=${rrdid}`;
-    
-    const response = await axios.get(reportUrl, {
-      headers: { 'Authorization': business.wb_api_key },
-      timeout: 30000
-    });
-
-    const data = response.data || [];
+    // 📊 Читаем данные из Supabase кэша
+    const data = await db.getFinancialReportFromCache(business.id, dateFromStr, dateToStr);
     res.json({ data });
   } catch (err) {
     console.error('Ошибка получения финансового отчёта:', err.message);
@@ -690,11 +714,11 @@ app.get('/api/logout', (req, res) => {
   res.redirect('/login');
 });
 
-// Главная страница (только для авторизованных)
-app.get('/', requireAuth, (req, res) => {
+// Страница анализа товаров (только для авторизованных)
+app.get('/products', requireAuth, (req, res) => {
   res.send(`<!doctype html>
 <html><head><meta charset="utf-8" />
-<title>WB Helper MAX</title>
+<title>WB Helper MAX - Анализ товаров</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:20px;color:#222;background:#f8f9fa}
 h1{margin:0 0 20px;font-size:32px;color:#2d3436}
@@ -759,7 +783,7 @@ tbody tr:hover{background:#f8f9fa}
   <button id="fetch" class="success">📊 Получить данные</button>
   <button id="open" class="secondary">🔗 Открыть товар</button>
   <button id="clear" class="danger">🗑️ Очистить таблицу</button>
-  <button id="finReport" style="background:#0984e3">📈 Фин отчёт</button>
+  <button onclick="window.location.href='/'" style="background:#0984e3">📈 Главная</button>
   <button onclick="localStorage.removeItem('authToken');window.location.href='/login'" style="background:#636e72">🚪 Выход</button>
 </div>
 <div class="table-wrapper">
@@ -805,11 +829,6 @@ window.addEventListener('DOMContentLoaded', function(){
   var btnFetch = document.getElementById('fetch');
   var btnOpen = document.getElementById('open');
   var btnClear = document.getElementById('clear');
-  var btnFinReport = document.getElementById('finReport');
-
-  btnFinReport.onclick = function(){
-    window.location.href = '/fin-report';
-  };
 
   btnOpen.onclick = function(){
     var nm = nmEl.value.trim();
@@ -1276,20 +1295,18 @@ async function fetchLegalEntityName(sellerId) {
   return '';
 }
 
-// Страница финансового отчета
-app.get('/fin-report', requireAuth, (req, res) => {
+// Главная страница - Финансовый отчет
+app.get('/', requireAuth, (req, res) => {
   res.send(`<!doctype html>
 <html><head><meta charset="utf-8" />
-<title>Финансовый отчет - WB Helper</title>
+<title>WB Helper - Финансовый отчет</title>
 <style>
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:20px;color:#222;background:#f8f9fa}
 h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 .container{width:100%;max-width:1400px;margin:0 auto;background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
-.back-btn{display:inline-block;padding:10px 20px;background:#6c5ce7;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;margin-bottom:20px;transition:all 0.2s}
-.back-btn:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(108,92,231,0.3)}
-.api-btn{display:inline-block;padding:12px 24px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;transition:all 0.2s;margin-bottom:20px;margin-left:12px}
+.api-btn{display:inline-block;padding:12px 24px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;transition:all 0.2s}
 .api-btn:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,185,148,0.3)}
-.update-btn{display:inline-block;padding:10px 20px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;transition:all 0.2s}
+.update-btn{display:inline-block;padding:12px 24px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:15px;cursor:pointer;transition:all 0.2s}
 .update-btn:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(108,92,231,0.3)}
 .info-box{background:#e3f2fd;padding:20px;border-radius:8px;margin:20px 0;border-left:4px solid #2196f3}
 .info-box h2{margin:0 0 10px;color:#1976d2;font-size:20px}
@@ -1321,6 +1338,7 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 .api-status.active{background:#d4edda;color:#155724;border:2px solid #c3e6cb}
 .api-status.inactive{background:#f8d7da;color:#721c24;border:2px solid #f5c6cb}
 .api-status-icon{font-size:18px}
+#dateRangeBtn:hover{border-color:#6c5ce7;box-shadow:0 4px 12px rgba(108,92,231,0.2);transform:translateY(-1px)}
 @keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.7;transform:scale(1.1)}}
 </style>
@@ -1329,16 +1347,19 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 <div class="container">
   <div style="margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <a href="/" class="back-btn">← Вернуться на главную</a>
-      <button class="api-btn" onclick="openBusinessManager()">🏢 Управление компаниями</button>
+      <button class="api-btn" onclick="openBusinessManager()">🏢 Управление магазинами</button>
+      <button class="api-btn" onclick="window.location.href='/products'" style="background:#6c5ce7">🔍 Анализ товаров</button>
       <div id="businessSelector" style="display:flex;gap:8px;align-items:center">
-        <label style="font-size:14px;font-weight:600;color:#2d3436">Компания:</label>
+        <label style="font-size:14px;font-weight:600;color:#2d3436">Магазин:</label>
         <select id="currentBusiness" onchange="switchBusiness()" style="padding:8px 12px;border:2px solid #dfe6e9;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;background:#fff">
           <option value="">Загрузка...</option>
         </select>
       </div>
+      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/login'" style="background:#636e72">🚪 Выход</button>
     </div>
-    <button class="update-btn" onclick="loadFinancialData()">📊 ОБНОВИТЬ ДАННЫЕ</button>
+    <div style="display:flex;gap:12px;align-items:center">
+      <button class="update-btn" onclick="syncWithWB()" title="Принудительная синхронизация с WB API">🔄 Синхронизация с WB</button>
+    </div>
   </div>
 
   <h1>📈 Финансовый отчет</h1>
@@ -1355,12 +1376,13 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 
   <!-- Панель управления -->
   <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;align-items:center">
-    <div style="display:flex;gap:8px;align-items:center;background:#fff;padding:8px 16px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
-      <label style="font-size:14px;font-weight:600;color:#2d3436;white-space:nowrap">📅 Период:</label>
-      <input type="date" id="dateFrom" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px;font-size:14px;cursor:pointer" />
-      <span style="color:#636e72">—</span>
-      <input type="date" id="dateTo" style="padding:6px 10px;border:1px solid #dfe6e9;border-radius:6px;font-size:14px;cursor:pointer" />
-    </div>
+    <button id="dateRangeBtn" onclick="openDateRangePicker()" style="display:flex;gap:8px;align-items:center;background:#fff;padding:12px 20px;border:2px solid #dfe6e9;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;color:#2d3436;transition:all 0.2s;box-shadow:0 2px 6px rgba(0,0,0,0.08)">
+      <span style="font-size:18px">📅</span>
+      <span id="dateRangeText">Период:</span>
+      <span id="dateRangeDisplay" style="color:#6c5ce7;font-weight:700">14.12.2025 — 13.01.2026</span>
+    </button>
+    <input type="date" id="dateFrom" style="display:none" />
+    <input type="date" id="dateTo" style="display:none" />
     <button id="btnFinReport" onclick="openFinReportModal()" style="padding:12px 24px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:15px;transition:all 0.3s;box-shadow:0 4px 12px rgba(102,126,234,0.3);position:relative">
       📈 Фин отчёт
       <span id="finReportBadge" style="display:none;position:absolute;top:-8px;right:-8px;background:#ff6b6b;color:#fff;border-radius:50%;width:20px;height:20px;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;animation:pulse 1.5s infinite">⏳</span>
@@ -1425,88 +1447,88 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
       </div>
       <div id="finReportTabs" style="display:none;gap:0;margin-bottom:0;flex-wrap:wrap;background:#f8f9fa;padding:0 20px"></div>
       <div style="overflow-x:auto;max-width:100%;max-height:70vh;overflow-y:auto;border-top:2px solid #e9ecef">
-        <table id="finReportTable" style="width:100%;border-collapse:collapse;min-width:3000px">
+        <table id="finReportTable" style="width:100%;border-collapse:collapse;min-width:4000px">
           <thead id="finReportHeader" style="position:sticky;top:0;z-index:10;background:#f8f9fa">
           <tr style="background:#f8f9fa">
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Номер отчёта</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата начала</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата конца</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата создания</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Валюта</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID строки</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">GI ID</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% доставки</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тариф дата с</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тариф дата по</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Предмет</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Артикул WB</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Бренд</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Артикул продавца</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Размер</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Баркод</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип документа</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кол-во</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Цена розничная</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Сумма продажи</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% скидки</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% комиссии</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Склад</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Операция</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата заказа</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата продажи</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Дата отчёта</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ШК</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Розница со скидкой</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Стоимость доставки</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Сумма возврата</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Доставка руб</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип коробки</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Скидка товара</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Промо продавца</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% СПП</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% КВВ база</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% КВВ</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Рейтинг %</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">КГВП v2</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Комиссия продаж</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">К перечислению</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Вознаграждение</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Эквайринг</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% эквайринга</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Обработка платежа</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Банк эквайринга</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Вознаграждение WB</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">НДС вознагр</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Офис</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID офиса</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID продавца</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Название продавца</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ИНН</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">№ декларации</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип бонуса</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID стикера</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Страна сайта</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">DBS</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Штраф</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Доп. платёж</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Ребилл логистика</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Ребилл орг</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Хранение</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Удержание</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Приёмка</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">ID сборки</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">КИЗ</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">SRID</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Тип отчёта</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Юрлицо</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">TRBX ID</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Рассрочка</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">% скидки WIBES</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк сумма</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк скидка</th>
-            <th style="padding:8px 12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">Кэшбэк комиссия</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">UID заказа</th>
-            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:13px">График платежей</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:40px;max-width:50px;word-wrap:break-word">№</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Номер поставки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Предмет</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:120px;word-wrap:break-word">Код номенклатуры</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Бренд</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Артикул поставщика</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:200px;word-wrap:break-word">Название</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:60px;max-width:80px;word-wrap:break-word">Размер</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Баркод</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Тип документа</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Обоснование для оплаты</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Дата заказа покупателем</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Дата продажи</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:60px;max-width:80px;word-wrap:break-word">Кол-во</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Цена розничная, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">ВайлдБерриз реализовал Товар (Пр)</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Согласованный продуктовый дисконт, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Промокод, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Итоговая согласованная скидка</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Цена розничная с учетом согласованной скидки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Размер снижения кВВ из-за реализации, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Размер снижения кВВ из-за акции, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Размер кВВ, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Размер кВВ без НДС, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Итоговая согласованная скидка, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Размер кВВ</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Возмещение за выдачу и возврат товаров</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Эквайринг/Комиссия за организацию платежей</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:180px;word-wrap:break-word">Размер комиссии за эквайринг/Комиссия за организацию платежей, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Тип платежа за Эквайринг/Комиссия за организацию платежей</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Возмещение ВайлдБерриз (ВВ), без НДС</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">НДС с Возмещения ВайлдБерриз</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">К перечислению Продавцу за реализованный Товар</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Количество поставок</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Количество возвратов</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Услуги по доставке товара покупателю</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Дата начала действия фиксации</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Дата конца действия фиксации</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Признак услуги штрафов и корректировок</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Общая сумма штрафов</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Корректировка Возмещения ВайлдБерриз (ВВ)</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:180px;word-wrap:break-word">Виды логистики, штрафов и корректировок ВВ</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Список МП</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Наименование банка-эквайера</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Номер офиса</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Наименование офиса доставки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:90px;max-width:120px;word-wrap:break-word">ИНН партнера</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Партнер</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:100px;word-wrap:break-word">Склад</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:70px;max-width:90px;word-wrap:break-word">Страна</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Тип коробов</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Номер таможенной декларации</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Номер сборочного задания</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Код маркировки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:60px;max-width:80px;word-wrap:break-word">ШК</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:60px;max-width:80px;word-wrap:break-word">Srid</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:180px;word-wrap:break-word">Возмещение издержек по перевозке/по складским операциям с товаром</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Организатор перевозки</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:80px;max-width:110px;word-wrap:break-word">Хранение</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:90px;max-width:120px;word-wrap:break-word">Удержания</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:140px;word-wrap:break-word">Операции при приемке</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Фиксированный коэффициент скидка по поставке</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:150px;word-wrap:break-word">Признак продажи юридическому лицу</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Номер короба для обработки товара</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:90px;max-width:120px;word-wrap:break-word">Скидка Wibes, %</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Компенсация скидки по программе лояльности</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:160px;word-wrap:break-word">Стоимость участия в программе лояльности</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:140px;max-width:190px;word-wrap:break-word">Сумма удержанная за начисленные баллы программы лояльности</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:100px;max-width:130px;word-wrap:break-word">Id корзины заказа</th>
+            <th style="padding:8px 12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;font-size:13px;min-width:120px;max-width:150px;word-wrap:break-word">Способы продажи и тип товара</th>
+            
+            
+            
+            
+            
+            
+            
+            
+            
           </tr>
         </thead>
         <tbody id="finReportBody">
@@ -1553,25 +1575,25 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 </div>
 </div>
 
-<!-- Модальное окно управления компаниями -->
+<!-- Модальное окно управления магазинами -->
 <div id="businessModal" class="modal">
   <div class="modal-content" style="max-width:900px">
     <div class="modal-header">
-      <h2>🏢 Управление компаниями</h2>
+      <h2>🏢 Управление магазинами</h2>
       <button class="close-btn" onclick="closeBusinessManager()">&times;</button>
     </div>
     
     <div style="margin-bottom:20px">
-      <button onclick="openAddBusinessForm()" style="padding:10px 20px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">+ Добавить компанию</button>
+      <button onclick="openAddBusinessForm()" style="padding:10px 20px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">+ Добавить магазин</button>
     </div>
     
-    <!-- Форма добавления компании -->
+    <!-- Форма добавления магазина -->
     <div id="addBusinessForm" style="display:none;background:#f8f9fa;padding:20px;border-radius:8px;margin-bottom:20px">
-      <h3 style="margin-top:0">Новая компания</h3>
+      <h3 style="margin-top:0">Новый магазин</h3>
       <form id="businessForm" onsubmit="addBusiness(event)">
         <div class="form-group">
-          <label for="companyName">Название компании *</label>
-          <input type="text" id="companyName" placeholder="Моя компания" required />
+          <label for="companyName">Название магазина *</label>
+          <input type="text" id="companyName" placeholder="Мой магазин" required />
         </div>
         <div class="form-group">
           <label for="wbApiKey">API ключ Wildberries *</label>
@@ -1580,7 +1602,7 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
         </div>
         <div class="form-group">
           <label for="description">Описание (необязательно)</label>
-          <textarea id="description" rows="2" placeholder="Краткое описание компании"></textarea>
+          <textarea id="description" rows="2" placeholder="Краткое описание магазина"></textarea>
         </div>
         <div style="display:flex;gap:10px">
           <button type="submit" style="padding:10px 20px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Сохранить</button>
@@ -1589,7 +1611,7 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
       </form>
     </div>
     
-    <!-- Список компаний -->
+    <!-- Список магазинов -->
     <div id="businessList" style="max-height:400px;overflow-y:auto">
       <p style="text-align:center;color:#636e72">Загрузка...</p>
     </div>
@@ -1605,13 +1627,78 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
     </div>
     
     <div style="flex-shrink:0;padding:0 20px 15px;border-bottom:1px solid #dfe6e9">
-      <button onclick="loadCostData()" style="padding:10px 20px;background:#00b894;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px">🚀 Запустить загрузку</button>
-      <button onclick="saveCostData()" style="padding:10px 20px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;margin-left:10px">💾 Сохранить</button>
+      <button id="saveCostBtn" onclick="saveCostData()" disabled style="padding:10px 20px;background:#b2bec3;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:not-allowed;font-size:14px">💾 Сохранить</button>
     </div>
     
     <div id="costTableContainer" style="flex:1;overflow:auto;padding:20px">
-      <p style="text-align:center;color:#636e72">Нажмите "Запустить загрузку" для получения данных</p>
+      <p style="text-align:center;color:#636e72">⏳ Загрузка товаров...</p>
     </div>
+  </div>
+</div>
+
+<!-- Модальное окно выбора диапазона дат -->
+<div id="dateRangeModal" class="modal" onclick="closeModalOnOutsideClick(event, 'dateRangeModal')">
+  <div class="modal-content" style="max-width:900px;padding:0" onclick="event.stopPropagation()">
+    <div class="modal-header" style="border-radius:12px 12px 0 0">
+      <h2>📅 Выбор периода</h2>
+      <button class="close-btn" onclick="closeModal('dateRangeModal')">&times;</button>
+    </div>
+    <div style="display:flex;gap:0">
+      <!-- Календарь -->
+      <div style="flex:1;padding:20px;border-right:1px solid #dfe6e9;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-shrink:0">
+          <button onclick="changeCalendarYear(-1)" style="padding:8px 12px;background:#f8f9fa;border:none;border-radius:6px;cursor:pointer;font-size:18px;font-weight:700;color:#2d3436">‹</button>
+          <div style="font-weight:700;font-size:18px;color:#2d3436">
+            <span id="calendarYear"></span>
+          </div>
+          <button onclick="changeCalendarYear(1)" style="padding:8px 12px;background:#f8f9fa;border:none;border-radius:6px;cursor:pointer;font-size:18px;font-weight:700;color:#2d3436">›</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:12px;flex-shrink:0">
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#636e72;padding:8px">Пн</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#636e72;padding:8px">Вт</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#636e72;padding:8px">Ср</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#636e72;padding:8px">Чт</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#636e72;padding:8px">Пт</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#ff6b6b;padding:8px">Сб</div>
+          <div style="text-align:center;font-weight:600;font-size:12px;color:#ff6b6b;padding:8px">Вс</div>
+        </div>
+        <div id="calendarMonths" style="flex:1;overflow-y:auto;max-height:500px"></div>
+      </div>
+      
+      <!-- Боковая панель -->
+      <div style="width:280px;padding:20px;background:#f8f9fa;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:13px;font-weight:600;color:#636e72;margin-bottom:4px">БЫСТРЫЙ ВЫБОР</div>
+          <button onclick="selectQuickRange('week')" style="padding:10px 16px;background:#fff;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;color:#2d3436;transition:all 0.2s;text-align:left">📅 Неделя</button>
+          <button onclick="selectQuickRange('month')" style="padding:10px 16px;background:#fff;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;color:#2d3436;transition:all 0.2s;text-align:left">📅 Месяц</button>
+          <button onclick="selectQuickRange('quarter')" style="padding:10px 16px;background:#fff;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;color:#2d3436;transition:all 0.2s;text-align:left">📅 Квартал</button>
+          <button onclick="selectQuickRange('year')" style="padding:10px 16px;background:#fff;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;color:#2d3436;transition:all 0.2s;text-align:left">📅 Год</button>
+        </div>
+        
+        <div style="border-top:1px solid #dfe6e9;padding-top:16px">
+          <div style="font-size:13px;font-weight:600;color:#636e72;margin-bottom:8px">ВЫБРАННЫЙ ПЕРИОД</div>
+          <div style="background:#fff;padding:12px;border-radius:8px;border:2px solid #dfe6e9;margin-bottom:8px">
+            <div style="font-size:12px;color:#636e72;margin-bottom:4px">Начало периода</div>
+            <div id="selectedStartDate" style="font-weight:700;color:#2d3436;font-size:14px">Не выбрано</div>
+          </div>
+          <div style="background:#fff;padding:12px;border-radius:8px;border:2px solid #dfe6e9">
+            <div style="font-size:12px;color:#636e72;margin-bottom:4px">Конец периода</div>
+            <div id="selectedEndDate" style="font-weight:700;color:#2d3436;font-size:14px">Не выбрано</div>
+          </div>
+        </div>
+        
+        <div style="margin-top:auto;display:flex;flex-direction:column;gap:10px">
+          <button onclick="resetDateRange()" style="padding:12px 24px;background:#fff;border:2px solid #dfe6e9;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;color:#2d3436;transition:all 0.2s">
+            Сбросить
+          </button>
+          <button onclick="applyDateRange()" style="padding:12px 24px;background:#6c5ce7;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;transition:all 0.2s">
+            Применить
+          </button>
+        </div>
+      </div>
+    </div>
+    <input type="date" id="dateFromPicker" style="display:none" />
+    <input type="date" id="dateToPicker" style="display:none" />
   </div>
 </div>
 
@@ -1708,7 +1795,21 @@ function loadBusinesses() {
     if (data.success) {
       businesses = data.businesses;
       renderBusinessList(data.businesses);
+      
+      // Восстанавливаем последний выбранный магазин из localStorage
+      const savedBusinessId = localStorage.getItem('selectedBusinessId');
+      if (savedBusinessId && savedBusinessId !== 'null') {
+        currentBusinessId = savedBusinessId === 'all' ? 'all' : parseInt(savedBusinessId);
+        console.log('📦 Восстановлен сохранённый магазин:', currentBusinessId);
+      }
+      
       updateBusinessSelector(data.businesses);
+      
+      // Автоматически загружаем данные из Supabase после загрузки списка компаний
+      if (currentBusinessId) {
+        console.log('🔄 Автозагрузка данных при инициализации страницы');
+        loadFinancialData();
+      }
     } else {
       document.getElementById('businessList').innerHTML = '<p style="color:#d63031">Ошибка: ' + data.error + '</p>';
     }
@@ -1720,16 +1821,16 @@ function loadBusinesses() {
 
 function renderBusinessList(businessList) {
   if (businessList.length === 0) {
-    document.getElementById('businessList').innerHTML = '<p style="text-align:center;color:#636e72">Нет компаний. Добавьте первую компанию.</p>';
+    document.getElementById('businessList').innerHTML = '<p style="text-align:center;color:#636e72">Нет магазинов. Добавьте первый магазин.</p>';
     return;
   }
   
   let html = '<div style="display:grid;gap:12px">';
   businessList.forEach(business => {
-    const isActive = business.is_active === 1;
+    const isActive = business.is_active === true || business.is_active === 1;
     const statusBadge = isActive 
-      ? '<span style="background:#00b894;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px">Активна</span>'
-      : '<span style="background:#dfe6e9;color:#636e72;padding:4px 8px;border-radius:4px;font-size:12px">Неактивна</span>';
+      ? '<span style="background:#00b894;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px">Активен</span>'
+      : '<span style="background:#dfe6e9;color:#636e72;padding:4px 8px;border-radius:4px;font-size:12px">Неактивен</span>';
     
     html += \`
       <div style="background:\${isActive ? '#fff' : '#f8f9fa'};padding:16px;border-radius:8px;border:2px solid \${isActive ? '#6c5ce7' : '#dfe6e9'}">
@@ -1773,7 +1874,7 @@ function addBusiness(event) {
   .then(res => res.json())
   .then(data => {
     if (data.success) {
-      alert('✅ Компания успешно добавлена!');
+      alert('✅ Магазин успешно добавлен!');
       closeAddBusinessForm();
       loadBusinesses();
     } else {
@@ -1808,7 +1909,7 @@ function toggleBusinessActive(businessId, isActive) {
 }
 
 function deleteBusiness(businessId, companyName) {
-  if (!confirm(\`Вы уверены, что хотите удалить компанию "\${companyName}"?\`)) {
+  if (!confirm(\`Вы уверены, что хотите удалить магазин "\${companyName}"?\`)) {
     return;
   }
   
@@ -1819,7 +1920,7 @@ function deleteBusiness(businessId, companyName) {
   .then(res => res.json())
   .then(data => {
     if (data.success) {
-      alert('✅ Компания удалена');
+      alert('✅ Магазин удалён');
       loadBusinesses();
     } else {
       alert('❌ Ошибка: ' + data.error);
@@ -1832,40 +1933,43 @@ function deleteBusiness(businessId, companyName) {
 
 function updateBusinessSelector(businessList) {
   const selector = document.getElementById('currentBusiness');
-  const activeBusinesses = businessList.filter(b => b.is_active === 1);
+  const activeBusinesses = businessList.filter(b => b.is_active === true || b.is_active === 1);
   
   if (activeBusinesses.length === 0) {
-    selector.innerHTML = '<option value="">Нет активных компаний</option>';
+    selector.innerHTML = '<option value="">Нет активных магазинов</option>';
     selector.disabled = true;
     return;
   }
   
   selector.disabled = false;
   
-  // Добавляем опцию "Все активные компании" если больше одной компании
-  let options = '';
+  // Добавляем placeholder "Выбор магазина"
+  let options = '<option value="" disabled>Выбор магазина...</option>';
+  
+  // Добавляем опцию "Все активные магазины" если больше одного магазина
   if (activeBusinesses.length > 1) {
-    options += '<option value="all">🌐 Все активные компании</option>';
+    options += '<option value="all">🌐 Все активные магазины</option>';
   }
   
+  // Добавляем список магазинов
   options += activeBusinesses.map(b => 
     \`<option value="\${b.id}">\${b.company_name}</option>\`
   ).join('');
   
   selector.innerHTML = options;
   
-  // Устанавливаем "Все активные компании" по умолчанию если их больше одной
-  if (activeBusinesses.length > 1) {
-    if (!currentBusinessId || currentBusinessId === 'all' || !activeBusinesses.find(b => b.id === currentBusinessId)) {
-      currentBusinessId = 'all';
-      selector.value = 'all';
-    } else {
-      selector.value = currentBusinessId;
-    }
-  } else {
-    // Если только одна компания - ставим её
+  // Устанавливаем первый магазин по умолчанию (или сохраняем текущий выбор)
+  if (currentBusinessId && (currentBusinessId === 'all' || activeBusinesses.find(b => b.id === currentBusinessId))) {
+    // Если уже был выбран магазин - сохраняем выбор
+    selector.value = currentBusinessId;
+  } else if (activeBusinesses.length === 1) {
+    // Если только один магазин - автоматически выбираем его
     currentBusinessId = activeBusinesses[0].id;
     selector.value = currentBusinessId;
+  } else {
+    // Если магазинов много и ничего не выбрано - показываем placeholder
+    currentBusinessId = null;
+    selector.value = '';
   }
   
   console.log('updateBusinessSelector: currentBusinessId=' + currentBusinessId + ', selector.value=' + selector.value);
@@ -1874,8 +1978,68 @@ function updateBusinessSelector(businessList) {
 function switchBusiness() {
   const value = document.getElementById('currentBusiness').value;
   currentBusinessId = value === 'all' ? 'all' : parseInt(value);
-  // Перезагружаем данные для новой компании (если они были загружены)
+  
+  // Сохраняем выбранный магазин в localStorage
+  if (currentBusinessId) {
+    localStorage.setItem('selectedBusinessId', currentBusinessId);
+    console.log('💾 Сохранён выбор магазина:', currentBusinessId);
+  } else {
+    localStorage.removeItem('selectedBusinessId');
+  }
+  
   console.log('switchBusiness: value=' + value + ', currentBusinessId=' + currentBusinessId);
+  
+  // Автоматически загружаем данные из Supabase при смене магазина
+  if (currentBusinessId) {
+    console.log('🔄 Автоматическая загрузка данных для магазина:', currentBusinessId);
+    loadFinancialData();
+  }
+}
+
+// Принудительная синхронизация с WB API
+function syncWithWB() {
+  if (!currentBusinessId || currentBusinessId === 'all') {
+    alert('❌ Выберите конкретный магазин для синхронизации с WB API');
+    return;
+  }
+  
+  if (!confirm('Запустить принудительную синхронизацию с WB API? Это может занять несколько минут.')) {
+    return;
+  }
+  
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Синхронизация...';
+  
+  fetch('/api/sync/' + currentBusinessId, {
+    method: 'POST',
+    headers: { 
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken'),
+      'Content-Type': 'application/json'
+    }
+  })
+  .then(res => res.json())
+  .then(data => {
+    btn.disabled = false;
+    btn.textContent = '🔄 Синхронизация с WB';
+    
+    if (data.success) {
+      alert('✅ Синхронизация завершена успешно!\\n\\n' +
+            'Продажи: ' + (data.results.sales || 0) + ' записей\\n' +
+            'Заказы: ' + (data.results.orders || 0) + ' записей\\n' +
+            'Финансы: ' + (data.results.financial || 0) + ' записей');
+      
+      // Перезагружаем данные после синхронизации
+      loadFinancialData();
+    } else {
+      alert('❌ Ошибка: ' + data.error);
+    }
+  })
+  .catch(err => {
+    btn.disabled = false;
+    btn.textContent = '🔄 Синхронизация с WB';
+    alert('❌ Ошибка синхронизации: ' + err.message);
+  });
 }
 
 // Закрытие модалки при клике вне её
@@ -1885,13 +2049,13 @@ document.getElementById('businessModal').addEventListener('click', function(e) {
   }
 });
 
-// Helper функция для загрузки данных из всех активных компаний
+// Helper функция для загрузки данных из всех активных магазинов
 function loadFromAllBusinesses(endpoint, dateRange, displayCallback) {
   const activeBusinesses = businesses.filter(b => b.is_active === 1);
   
   if (activeBusinesses.length === 0) {
     const tbody = document.getElementById('datasetBody');
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:40px;text-align:center;color:#d63031">❌ Нет активных компаний</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="padding:40px;text-align:center;color:#d63031">❌ Нет активных магазинов</td></tr>';
     return;
   }
   
@@ -1957,10 +2121,11 @@ let costDataCache = []; // Кеш данных о себестоимости
 
 function openCostModal() {
   if (!currentBusinessId) {
-    alert('❌ Сначала выберите компанию');
+    alert('❌ Сначала Выберите магазин');
     return;
   }
   document.getElementById('costModal').classList.add('active');
+  loadCostData();
 }
 
 function closeCostModal() {
@@ -1970,7 +2135,7 @@ function closeCostModal() {
 // Загрузка данных из WB API для текущей компании
 function loadCostData() {
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
@@ -1980,7 +2145,7 @@ function loadCostData() {
   // Получаем API ключ из текущей выбранной компании
   const business = businesses.find(b => b.id === currentBusinessId);
   if (!business) {
-    container.innerHTML = '<p style="text-align:center;color:#d63031">❌ Компания не найдена</p>';
+    container.innerHTML = '<p style="text-align:center;color:#d63031">❌ Магазин не найден</p>';
     return;
   }
   
@@ -2004,8 +2169,8 @@ function loadCostData() {
     // Формируем данные для таблицы
     costDataCache = response.data.map(item => ({
       nmId: item.nmId,
-      subject: item.subject || '—',
       brand: item.brand || '—',
+      customName: '', // Название присваивается пользователем
       cost: 0 // Себестоимость заполняется вручную
     }));
     
@@ -2027,11 +2192,12 @@ function loadSavedCosts() {
   .then(res => res.json())
   .then(data => {
     if (data.success && data.costs) {
-      // Обновляем себестоимости в кеше из БД
+      // Обновляем себестоимости и названия в кеше из БД
       data.costs.forEach(savedCost => {
         const item = costDataCache.find(c => c.nmId == savedCost.nm_id);
         if (item) {
           item.cost = savedCost.cost;
+          item.customName = savedCost.custom_name || '';
         }
       });
     }
@@ -2043,6 +2209,32 @@ function loadSavedCosts() {
   });
 }
 
+// Получить URL изображения товара по nmId
+function getProductImageUrl(nmId) {
+  // Актуальный формат WB 2025-2026
+  const vol = Math.floor(nmId / 100000);
+  const part = Math.floor(nmId / 1000);
+  
+  // Определение хоста по vol
+  let host;
+  if (vol >= 0 && vol <= 143) host = '01';
+  else if (vol >= 144 && vol <= 287) host = '02';
+  else if (vol >= 288 && vol <= 431) host = '03';
+  else if (vol >= 432 && vol <= 719) host = '04';
+  else if (vol >= 720 && vol <= 1007) host = '05';
+  else if (vol >= 1008 && vol <= 1061) host = '06';
+  else if (vol >= 1062 && vol <= 1115) host = '07';
+  else if (vol >= 1116 && vol <= 1169) host = '08';
+  else if (vol >= 1170 && vol <= 1313) host = '09';
+  else if (vol >= 1314 && vol <= 1601) host = '10';
+  else if (vol >= 1602 && vol <= 1655) host = '11';
+  else if (vol >= 1656 && vol <= 1919) host = '12';
+  else if (vol >= 1920 && vol <= 2045) host = '13';
+  else host = '14';
+  
+  return \`https://basket-\${host}.wbbasket.ru/vol\${vol}/part\${part}/\${nmId}/images/big/1.webp\`;
+}
+
 // Отрисовка таблицы с данными
 function renderCostTable() {
   const container = document.getElementById('costTableContainer');
@@ -2051,29 +2243,48 @@ function renderCostTable() {
     <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden">
       <thead>
         <tr style="background:#f8f9fa">
-          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Артикул WB</th>
-          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Предмет</th>
-          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Бренд</th>
-          <th style="padding:12px;text-align:right;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436">Себестоимость (₽)</th>
+          <th style="padding:12px;text-align:center;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436;width:80px">Фото</th>
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436;width:12%">Бренд</th>
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436;width:12%">Артикул WB</th>
+          <th style="padding:12px;text-align:left;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436;width:35%">Название товара</th>
+          <th style="padding:12px;text-align:right;border-bottom:2px solid #dfe6e9;font-weight:600;color:#2d3436;width:25%">Себестоимость (₽)</th>
         </tr>
       </thead>
       <tbody>
   \`;
   
   costDataCache.forEach((item, index) => {
+    const imageUrl = getProductImageUrl(item.nmId);
     html += \`
       <tr style="border-bottom:1px solid #f1f3f5">
-        <td style="padding:12px;color:#2d3436;font-weight:500">\${item.nmId}</td>
-        <td style="padding:12px;color:#636e72">\${item.subject}</td>
+        <td style="padding:8px;text-align:center">
+          <img 
+            src="\${imageUrl}" 
+            alt="Товар" 
+            style="width:50px;height:50px;object-fit:cover;border-radius:6px;border:1px solid #dfe6e9"
+            onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22%3E%3Crect width=%2250%22 height=%2250%22 fill=%22%23dfe6e9%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%23636e72%22 font-size=%2212%22%3E📦%3C/text%3E%3C/svg%3E'"
+          />
+        </td>
         <td style="padding:12px;color:#636e72">\${item.brand}</td>
+        <td style="padding:12px;color:#2d3436;font-weight:500">\${item.nmId}</td>
+        <td style="padding:12px">
+          <input 
+            type="text" 
+            id="name_\${index}"
+            value="\${item.customName || ''}"
+            oninput="updateCostField(\${index}, 'customName', this.value)"
+            placeholder="Введите название"
+            style="width:100%;padding:6px 10px;border:2px solid #dfe6e9;border-radius:6px;font-size:14px"
+          />
+        </td>
         <td style="padding:12px;text-align:right">
           <input 
             type="number" 
             id="cost_\${index}"
             value="\${item.cost || ''}"
-            onchange="updateCost(\${index}, this.value)"
+            oninput="updateCostField(\${index}, 'cost', this.value)"
             placeholder="0"
-            style="width:120px;padding:6px 10px;border:2px solid #dfe6e9;border-radius:6px;text-align:right;font-size:14px"
+            style="width:150px;padding:6px 10px;border:2px solid #dfe6e9;border-radius:6px;text-align:right;font-size:14px"
           />
         </td>
       </tr>
@@ -2088,10 +2299,22 @@ function renderCostTable() {
   container.innerHTML = html;
 }
 
-// Обновление себестоимости в кеше
-function updateCost(index, value) {
+// Обновление данных в кеше и активация кнопки сохранения
+function updateCostField(index, field, value) {
   if (costDataCache[index]) {
-    costDataCache[index].cost = parseFloat(value) || 0;
+    if (field === 'cost') {
+      costDataCache[index].cost = parseFloat(value) || 0;
+    } else if (field === 'customName') {
+      costDataCache[index].customName = value;
+    }
+    
+    // Активируем кнопку сохранения
+    const saveBtn = document.getElementById('saveCostBtn');
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.style.background = '#6c5ce7';
+      saveBtn.style.cursor = 'pointer';
+    }
   }
 }
 
@@ -2120,6 +2343,13 @@ function saveCostData() {
   .then(data => {
     if (data.success) {
       alert(\`✅ \${data.message}\`);
+      // Деактивируем кнопку после успешного сохранения
+      const saveBtn = document.getElementById('saveCostBtn');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.style.background = '#b2bec3';
+        saveBtn.style.cursor = 'not-allowed';
+      }
     } else {
       alert('❌ Ошибка: ' + data.error);
     }
@@ -2127,6 +2357,242 @@ function saveCostData() {
   .catch(err => {
     alert('❌ Ошибка сохранения: ' + err.message);
   });
+}
+
+// ==================== ВЫБОР ДИАПАЗОНА ДАТ ====================
+let currentCalendarYear = new Date().getFullYear();
+let selectedStartDate = null;
+let selectedEndDate = null;
+let isSelectingRange = false;
+
+function openDateRangePicker() {
+  const dateFrom = document.getElementById('dateFrom');
+  const dateTo = document.getElementById('dateTo');
+  
+  // Устанавливаем текущий выбранный диапазон
+  if (dateFrom.value && dateTo.value) {
+    selectedStartDate = new Date(dateFrom.value);
+    selectedEndDate = new Date(dateTo.value);
+    updateSelectedDatesDisplay();
+  }
+  
+  // Показываем текущий год
+  currentCalendarYear = (selectedEndDate || new Date()).getFullYear();
+  renderCalendar();
+  
+  document.getElementById('dateRangeModal').style.display = 'flex';
+  
+  // Скроллим к текущему месяцу
+  setTimeout(() => {
+    const currentMonth = (selectedEndDate || new Date()).getMonth();
+    const monthElement = document.getElementById('month-' + currentMonth);
+    if (monthElement) {
+      monthElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, 100);
+}
+
+function renderCalendar() {
+  const year = currentCalendarYear;
+  
+  // Обновляем заголовок года
+  document.getElementById('calendarYear').textContent = year;
+  
+  const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  const monthsContainer = document.getElementById('calendarMonths');
+  monthsContainer.innerHTML = '';
+  
+  // Рендерим все 12 месяцев
+  for (let month = 0; month < 12; month++) {
+    const monthBlock = document.createElement('div');
+    monthBlock.id = 'month-' + month;
+    monthBlock.style.cssText = 'margin-bottom:24px;scroll-margin-top:20px';
+    
+    // Заголовок месяца
+    const monthTitle = document.createElement('div');
+    monthTitle.textContent = monthNames[month];
+    monthTitle.style.cssText = 'font-weight:700;font-size:16px;color:#2d3436;margin-bottom:12px;text-align:center';
+    monthBlock.appendChild(monthTitle);
+    
+    // Сетка дней
+    const daysGrid = document.createElement('div');
+    daysGrid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px';
+    
+    // Получаем первый и последний день месяца
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    
+    // Получаем день недели первого дня
+    let startDayOfWeek = firstDay.getDay();
+    startDayOfWeek = startDayOfWeek === 0 ? 6 : startDayOfWeek - 1;
+    
+    // Пустые ячейки
+    for (let i = 0; i < startDayOfWeek; i++) {
+      const emptyDay = document.createElement('div');
+      emptyDay.style.padding = '10px';
+      daysGrid.appendChild(emptyDay);
+    }
+    
+    // Дни месяца
+    for (let day = 1; day <= lastDay.getDate(); day++) {
+      const dayDate = new Date(year, month, day);
+      const dayElement = document.createElement('div');
+      dayElement.textContent = day;
+      dayElement.style.cssText = 'padding:10px;text-align:center;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;transition:all 0.2s';
+      
+      // Проверяем диапазон
+      const isInRange = selectedStartDate && selectedEndDate && 
+                        dayDate >= selectedStartDate && dayDate <= selectedEndDate;
+      const isStart = selectedStartDate && dayDate.toDateString() === selectedStartDate.toDateString();
+      const isEnd = selectedEndDate && dayDate.toDateString() === selectedEndDate.toDateString();
+      
+      if (isStart || isEnd) {
+        dayElement.style.background = '#6c5ce7';
+        dayElement.style.color = '#fff';
+      } else if (isInRange) {
+        dayElement.style.background = '#e3e1fc';
+        dayElement.style.color = '#6c5ce7';
+      } else {
+        dayElement.style.background = '#fff';
+        dayElement.style.color = '#2d3436';
+      }
+      
+      dayElement.onmouseover = () => {
+        if (!isStart && !isEnd) {
+          dayElement.style.background = '#f8f9fa';
+        }
+      };
+      dayElement.onmouseout = () => {
+        if (!isInRange && !isStart && !isEnd) {
+          dayElement.style.background = '#fff';
+        } else if (isInRange && !isStart && !isEnd) {
+          dayElement.style.background = '#e3e1fc';
+        }
+      };
+      
+      dayElement.onclick = () => selectDate(dayDate);
+      
+      daysGrid.appendChild(dayElement);
+    }
+    
+    monthBlock.appendChild(daysGrid);
+    monthsContainer.appendChild(monthBlock);
+  }
+}
+
+function selectDate(date) {
+  if (!selectedStartDate || (selectedStartDate && selectedEndDate)) {
+    // Начинаем новый выбор
+    selectedStartDate = date;
+    selectedEndDate = null;
+  } else if (selectedStartDate && !selectedEndDate) {
+    // Выбираем конечную дату
+    if (date < selectedStartDate) {
+      selectedEndDate = selectedStartDate;
+      selectedStartDate = date;
+    } else {
+      selectedEndDate = date;
+    }
+  }
+  
+  updateSelectedDatesDisplay();
+  renderCalendar();
+}
+
+function changeCalendarYear(offset) {
+  currentCalendarYear += offset;
+  renderCalendar();
+}
+
+function updateSelectedDatesDisplay() {
+  const formatDate = (date) => {
+    if (!date) return 'Не выбрано';
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return \`\${day}.\${month}.\${year}\`;
+  };
+  
+  document.getElementById('selectedStartDate').textContent = formatDate(selectedStartDate);
+  document.getElementById('selectedEndDate').textContent = formatDate(selectedEndDate);
+}
+
+function selectQuickRange(type) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Конечная дата = сегодня
+  selectedEndDate = new Date(today);
+  
+  switch(type) {
+    case 'week':
+      selectedStartDate = new Date(today);
+      selectedStartDate.setDate(selectedStartDate.getDate() - 7);
+      break;
+    case 'month':
+      selectedStartDate = new Date(today);
+      selectedStartDate.setDate(selectedStartDate.getDate() - 30);
+      break;
+    case 'quarter':
+      selectedStartDate = new Date(today);
+      selectedStartDate.setDate(selectedStartDate.getDate() - 90);
+      break;
+    case 'year':
+      selectedStartDate = new Date(today);
+      selectedStartDate.setDate(selectedStartDate.getDate() - 365);
+      break;
+  }
+  
+  updateSelectedDatesDisplay();
+  renderCalendar();
+  
+  // Автоматически применяем выбранный быстрый период
+  applyDateRange();
+}
+
+function resetDateRange() {
+  selectedStartDate = null;
+  selectedEndDate = null;
+  updateSelectedDatesDisplay();
+  renderCalendar();
+}
+
+function applyDateRange() {
+  if (!selectedStartDate || !selectedEndDate) {
+    alert('⚠️ Пожалуйста, выберите обе даты');
+    return;
+  }
+  
+  // Применяем даты
+  const toISOString = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return \`\${year}-\${month}-\${day}\`;
+  };
+  
+  document.getElementById('dateFrom').value = toISOString(selectedStartDate);
+  document.getElementById('dateTo').value = toISOString(selectedEndDate);
+  
+  // Форматируем для отображения (dd.mm.yyyy)
+  const formatDate = (date) => {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return \`\${day}.\${month}.\${year}\`;
+  };
+  
+  const displayText = \`\${formatDate(selectedStartDate)} — \${formatDate(selectedEndDate)}\`;
+  document.getElementById('dateRangeDisplay').textContent = displayText;
+  
+  // Сохраняем период в localStorage
+  localStorage.setItem('selectedDateFrom', toISOString(selectedStartDate));
+  localStorage.setItem('selectedDateTo', toISOString(selectedEndDate));
+  
+  closeModal('dateRangeModal');
+  
+  // Автоматически перезагружаем данные с новым периодом
+  loadFinancialData();
 }
 
 // Закрытие модалки при клике вне её
@@ -2145,12 +2611,37 @@ window.addEventListener('DOMContentLoaded', function() {
     return;
   }
   
-  const dateTo = new Date();
-  const dateFrom = new Date();
-  dateFrom.setDate(dateFrom.getDate() - 30);
+  // Восстанавливаем сохраненный период или устанавливаем значения по умолчанию
+  const savedDateFrom = localStorage.getItem('selectedDateFrom');
+  const savedDateTo = localStorage.getItem('selectedDateTo');
+  
+  let dateTo, dateFrom;
+  
+  if (savedDateFrom && savedDateTo) {
+    // Восстанавливаем сохраненный период
+    dateFrom = new Date(savedDateFrom);
+    dateTo = new Date(savedDateTo);
+  } else {
+    // Устанавливаем dateTo = вчера (исключая сегодня)
+    dateTo = new Date();
+    dateTo.setDate(dateTo.getDate() - 1); // вчера
+    
+    // dateFrom = 90 дней назад (максимальный период WB API)
+    dateFrom = new Date();
+    dateFrom.setDate(dateFrom.getDate() - 90);
+  }
   
   document.getElementById('dateTo').value = dateTo.toISOString().split('T')[0];
   document.getElementById('dateFrom').value = dateFrom.toISOString().split('T')[0];
+  
+  // Обновляем отображение диапазона дат
+  const formatDate = (date) => {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return \`\${day}.\${month}.\${year}\`;
+  };
+  document.getElementById('dateRangeDisplay').textContent = \`\${formatDate(dateFrom)} — \${formatDate(dateTo)}\`;
   
   // Загружаем список компаний
   loadBusinesses();
@@ -2187,7 +2678,7 @@ function getDateRange() {
 // Функция загрузки ВСЕХ отчётов сразу
 function loadFinancialData() {
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
@@ -2258,7 +2749,7 @@ function openOrdersModal() {
 
 function loadSales() {
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
@@ -2289,7 +2780,7 @@ function loadSales() {
 
 function loadOrders() {
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
@@ -2299,7 +2790,7 @@ function loadOrders() {
   const tbody = document.getElementById('ordersBody');
   tbody.innerHTML = '<tr><td colspan="7" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка заказов...</td></tr>';
   
-  // Если выбраны все компании - загружаем из всех активных
+  // Если выбраны все магазины - загружаем из всех активных
   if (currentBusinessId === 'all') {
     loadFromAllBusinesses('/api/wb-orders', dateRange, displayOrdersData);
     return;
@@ -2342,9 +2833,9 @@ function displayOrdersData(data) {
     '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Артикул WB</th>' +
     '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Предмет</th>' +
     '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Бренд</th>' +
-    '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Кол-во заказов</th>' +
-    '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Общая сумма</th>' +
-    '<th style="padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Средняя цена</th>' +
+    '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Кол-во заказов</th>' +
+    '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Общая сумма</th>' +
+    '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Средняя цена</th>' +
     '<th style="padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px">Склад</th>' +
     '</tr>';
   
@@ -2420,14 +2911,14 @@ function displayOrdersData(data) {
 // Загрузка отчёта по продажам (уникальные артикулы)
 function loadSalesReport(dateRange) {
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
   const tbody = document.getElementById('salesReportBody');
   tbody.innerHTML = '<tr><td colspan="11" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка отчёта по продажам...</td></tr>';
   
-  // Если выбраны все компании - загружаем из всех активных
+  // Если выбраны все магазины - загружаем из всех активных
   if (currentBusinessId === 'all') {
     loadFromAllBusinesses('/api/wb-sales-grouped', dateRange, displaySalesReport);
     return;
@@ -2479,17 +2970,18 @@ function displaySalesReport(data) {
   
   // Устанавливаем заголовки с возможностью сортировки
   const thStyle = 'padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px;cursor:pointer;user-select:none;transition:all 0.2s';
-  const thStyleRight = 'padding:12px;text-align:right;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px;cursor:pointer;user-select:none;transition:all 0.2s';
+  const thStyleRight = 'padding:12px;text-align:left;border-bottom:2px solid #e9ecef;font-weight:600;color:#2d3436;white-space:nowrap;font-size:14px;cursor:pointer;user-select:none;transition:all 0.2s';
   
   thead.innerHTML = '<tr style="background:#f8f9fa">' +
-    '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;company_name&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Компания ↕</th>' +
+    '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;company_name&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Магазин ↕</th>' +
     '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;nmId&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Артикул WB ↕</th>' +
     '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;subject&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Предмет ↕</th>' +
     '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;brand&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Бренд ↕</th>' +
-    '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;quantity&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Кол-во продаж ↕</th>' +
-    '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalRevenue&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Общая выручка ↕</th>' +
+    '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;quantity&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Кол-во ↕</th>' +
+    '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalRevenue&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Выручка ↕</th>' +
     '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalCommission&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Комиссия ↕</th>' +
     '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalLogistics&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Логистика ↕</th>' +
+    '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalForPay&quot;)" onmouseover="this.style.color=&quot;#00b894&quot;;this.style.background=&quot;#e8fff6&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">К перечислению ↕</th>' +
     '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;totalProfit&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Прибыль ↕</th>' +
     '<th style="' + thStyleRight + '" onclick="sortSalesReport(&quot;avgPrice&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Средняя цена ↕</th>' +
     '<th style="' + thStyle + '" onclick="sortSalesReport(&quot;warehouseName&quot;)" onmouseover="this.style.color=&quot;#6c5ce7&quot;;this.style.background=&quot;#e8e6ff&quot;" onmouseout="this.style.color=&quot;#2d3436&quot;;this.style.background=&quot;transparent&quot;">Склад ↕</th>' +
@@ -2504,7 +2996,7 @@ function displaySalesReport(data) {
   const aggregated = {};
   data.forEach(item => {
     const key = item.nmId + '_' + item.brand + '_' + (item.company_name || ''); // Уникальный ключ
-    
+
     if (!aggregated[key]) {
       aggregated[key] = {
         company_name: item.company_name || '—',
@@ -2516,26 +3008,28 @@ function displaySalesReport(data) {
         totalCommission: 0,
         totalLogistics: 0,
         totalProfit: 0,
+        totalForPay: 0, // Сумма к перечислению
         prices: [],
         warehouseName: item.warehouseName
       };
     }
-    
+
     aggregated[key].quantity += item.quantity || 0;
     aggregated[key].totalRevenue += item.totalRevenue || 0;
     aggregated[key].totalCommission += item.totalCommission || 0;
     aggregated[key].totalLogistics += item.totalLogistics || 0;
     aggregated[key].totalProfit += item.totalProfit || 0;
+    aggregated[key].totalForPay += item.totalForPay || 0; // Добавляем к перечислению
     if (item.avgPrice) {
       aggregated[key].prices.push(item.avgPrice);
     }
   });
-  
+
   // Преобразуем обратно в массив и считаем среднюю цену
   let finalData = Object.values(aggregated).map(item => ({
     ...item,
-    avgPrice: item.prices.length > 0 
-      ? item.prices.reduce((sum, p) => sum + p, 0) / item.prices.length 
+    avgPrice: item.prices.length > 0
+      ? item.prices.reduce((sum, p) => sum + p, 0) / item.prices.length
       : 0
   }));
   
@@ -2554,7 +3048,7 @@ function displaySalesReport(data) {
   finalData.forEach(item => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f1f3f5';
-    tr.innerHTML = 
+    tr.innerHTML =
       '<td style="padding:12px;font-size:14px;font-weight:600;color:#6c5ce7">' + (item.company_name || '—') + '</td>' +
       '<td style="padding:12px;font-size:14px;font-weight:600">' + (item.nmId || '—') + '</td>' +
       '<td style="padding:12px;font-size:14px">' + (item.subject || '—') + '</td>' +
@@ -2563,6 +3057,7 @@ function displaySalesReport(data) {
       '<td style="padding:12px;text-align:right;font-size:14px">' + (item.totalRevenue || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;color:#d63031">' + (item.totalCommission || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;color:#e17055">' + (item.totalLogistics || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;font-weight:700;color:#00b894;font-size:16px">' + (item.totalForPay || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;font-weight:600;color:#00b894">' + (item.totalProfit || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px">' + (item.avgPrice || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;font-size:13px;color:#636e72">' + (item.warehouseName || '—') + '</td>';
@@ -2570,19 +3065,20 @@ function displaySalesReport(data) {
   });
   
   // Обновляем карточки статистики
-  let totalRevenue = 0, totalCommission = 0, totalLogistics = 0, totalProfit = 0;
+  let totalRevenue = 0, totalCommission = 0, totalLogistics = 0, totalProfit = 0, totalForPay = 0;
   finalData.forEach(item => {
     totalRevenue += item.totalRevenue || 0;
     totalCommission += item.totalCommission || 0;
     totalLogistics += item.totalLogistics || 0;
     totalProfit += item.totalProfit || 0;
+    totalForPay += item.totalForPay || 0;
   });
-  
+
   document.getElementById('totalRevenue').textContent = totalRevenue.toFixed(2) + ' ₽';
   document.getElementById('totalCommission').textContent = '-' + totalCommission.toFixed(2) + ' ₽';
   document.getElementById('totalLogistics').textContent = totalLogistics.toFixed(2) + ' ₽';
-  document.getElementById('netProfit').textContent = totalProfit.toFixed(2) + ' ₽';
-  document.getElementById('pureProfit').textContent = '—';
+  document.getElementById('netProfit').textContent = totalForPay.toFixed(2) + ' ₽';
+  document.getElementById('pureProfit').textContent = 'К перечислению: ' + totalForPay.toFixed(2) + ' ₽';
   
   // Устанавливаем флаг загрузки
   salesReportDataLoaded = true;
@@ -2597,7 +3093,7 @@ function displaySalesReport(data) {
 // Функция сортировки таблицы продаж
 function sortSalesReport(column) {
   // Определяем тип данных для корректной сортировки
-  const numericColumns = ['nmId', 'quantity', 'totalRevenue', 'totalCommission', 'totalLogistics', 'totalProfit', 'avgPrice'];
+  const numericColumns = ['nmId', 'quantity', 'totalRevenue', 'totalCommission', 'totalLogistics', 'totalProfit', 'totalForPay', 'avgPrice'];
   const isNumeric = numericColumns.includes(column);
   
   // Переключаем направление, если кликнули на ту же колонку
@@ -2612,7 +3108,7 @@ function sortSalesReport(column) {
   salesReportData.sort((a, b) => {
     let valA = a[column];
     let valB = b[column];
-    
+
     if (isNumeric) {
       valA = parseFloat(valA) || 0;
       valB = parseFloat(valB) || 0;
@@ -2624,14 +3120,14 @@ function sortSalesReport(column) {
       return salesSortState.direction === 'asc' ? comparison : -comparison;
     }
   });
-  
+
   // Перерисовываем таблицу
   const tbody = document.getElementById('salesReportBody');
   tbody.innerHTML = '';
   salesReportData.forEach(item => {
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f1f3f5';
-    tr.innerHTML = 
+    tr.innerHTML =
       '<td style="padding:12px;font-size:14px;font-weight:600;color:#6c5ce7">' + (item.company_name || '—') + '</td>' +
       '<td style="padding:12px;font-size:14px;font-weight:600">' + (item.nmId || '—') + '</td>' +
       '<td style="padding:12px;font-size:14px">' + (item.subject || '—') + '</td>' +
@@ -2640,6 +3136,7 @@ function sortSalesReport(column) {
       '<td style="padding:12px;text-align:right;font-size:14px">' + (item.totalRevenue || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;color:#d63031">' + (item.totalCommission || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;color:#e17055">' + (item.totalLogistics || 0).toFixed(2) + ' ₽</td>' +
+      '<td style="padding:12px;text-align:right;font-size:14px;font-weight:700;color:#00b894;font-size:16px">' + (item.totalForPay || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px;font-weight:600;color:#00b894">' + (item.totalProfit || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;text-align:right;font-size:14px">' + (item.avgPrice || 0).toFixed(2) + ' ₽</td>' +
       '<td style="padding:12px;font-size:13px;color:#636e72">' + (item.warehouseName || '—') + '</td>';
@@ -2652,21 +3149,21 @@ function loadFullFinReport(dateRange) {
   console.log('loadFullFinReport вызвана, currentBusinessId:', currentBusinessId);
   
   if (!currentBusinessId) {
-    alert('❌ Выберите компанию');
+    alert('❌ Выберите магазин');
     return;
   }
   
   const tbody = document.getElementById('finReportBody');
   tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">⏳ Загрузка финансового отчёта...</td></tr>';
   
-  // Если выбраны все компании - загружаем из всех активных
+  // Если выбраны все магазины - загружаем из всех активных
   if (currentBusinessId === 'all') {
-    console.log('Загружаем из всех активных компаний');
+    console.log('Загружаем из всех активных магазинов');
     loadFromAllBusinesses('/api/wb-fin-report', dateRange, displayFullFinReport);
     return;
   }
   
-  console.log('Загружаем из одной компании:', currentBusinessId);
+  console.log('Загружаем из одного магазина:', currentBusinessId);
   
   fetch('/api/wb-fin-report?businessId=' + currentBusinessId + '&dateFrom=' + dateRange.dateFrom + '&dateTo=' + dateRange.dateTo, {
     headers: {
@@ -2712,7 +3209,7 @@ function displayFullFinReport(data) {
   const tabsContainer = document.getElementById('finReportTabs');
   
   if (!data || data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">Нет данных за выбранный период</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="69" style="padding:40px;text-align:center;color:#636e72">Нет данных за выбранный период</td></tr>';
     if (tabsContainer) tabsContainer.style.display = 'none';
     
     // Устанавливаем флаг загрузки даже если данных нет
@@ -2794,94 +3291,94 @@ function renderFinReportData(data) {
   const tbody = document.getElementById('finReportBody');
   
   if (!data || data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="82" style="padding:40px;text-align:center;color:#636e72">Нет данных</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="71" style="padding:40px;text-align:center;color:#636e72">Нет данных</td></tr>';
     return;
   }
   
   tbody.innerHTML = '';
+  let rowNumber = 0;
   data.forEach(item => {
+    rowNumber++;
     const tr = document.createElement('tr');
     tr.style.borderBottom = '1px solid #f1f3f5';
+    
+    // Размер товара из ts_name
+    const size = item.ts_name ? item.ts_name.split('/')[0] : '—';
+    
     tr.innerHTML = 
-      '<td style="padding:8px 12px;font-size:13px">' + (item.realizationreport_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.date_from || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.date_to || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.create_dt || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.currency_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.rrd_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.dlv_prc || 0) + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.fix_tariff_date_from || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.fix_tariff_date_to || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + rowNumber + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_id || 0) + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.subject_name || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.nm_id || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.brand_name || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.sa_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ts_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + (item.ts_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + size + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.barcode || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.doc_type_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.quantity || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600">' + (item.retail_amount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sale_percent || 0) + '%</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.commission_percent || 0) + '%</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.office_name || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.supplier_oper_name || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.order_dt ? new Date(item.order_dt).toLocaleDateString('ru-RU') : '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.sale_dt ? new Date(item.sale_dt).toLocaleDateString('ru-RU') : '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.rr_dt || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.shk_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price_withdisc_rub || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_amount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.return_amount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_rub || 0) + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_box_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.quantity || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600">' + (item.retail_amount || 0).toFixed(2) + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.product_discount_for_report || 0) + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.supplier_promo || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_spp_prc || 0) + '%</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc_base || 0) + '%</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc || 0) + '%</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sup_rating_prc_up || 0) + '%</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_spp_prc || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.retail_price_withdisc_rub || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc_base || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sup_rating_prc_up || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_kvw_prc || 0) + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.is_kgvp_v2 || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#d63031">' + (item.ppvz_sales_commission || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600;color:#00b894">' + (item.ppvz_for_pay || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_reward || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#e17055">' + (item.acquiring_fee || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acquiring_percent || 0) + '%</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.payment_processing || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.acquiring_bank || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.sale_percent || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_sales_commission || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_reward || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acquiring_fee || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.commission_percent || 0) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.bonus_type_name || '—') + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_vw || 0).toFixed(2) + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.ppvz_vw_nds || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_supplier_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_supplier_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_inn || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.declaration_number || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.bonus_type_name || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.sticker_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.site_country || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.srv_dbs ? 'Да' : 'Нет') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px;font-weight:600;color:#00b894">' + (item.ppvz_for_pay || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.return_amount || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.delivery_rub || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.date_from ? new Date(item.date_from).toLocaleDateString('ru-RU') : '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.date_to ? new Date(item.date_to).toLocaleDateString('ru-RU') : '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.supplier_oper_name || '—') + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#d63031">' + (item.penalty || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.additional_payment || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.rebill_logistic_cost || 0) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.additional_payment || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_box_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.sticker_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.acquiring_bank || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_office_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_inn || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.ppvz_supplier_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.office_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.site_country || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.gi_box_type_name || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.declaration_number || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.rid || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis">' + (item.kiz || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.shk_id || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.srid || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.rebill_logistic_cost || 0).toFixed(2) + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.rebill_logistic_org || '—') + '</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px;color:#e17055">' + (item.storage_fee || 0).toFixed(2) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.deduction || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acceptance || 0) + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.assembly_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis">' + (item.kiz || '—') + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.deduction || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.acceptance || 0).toFixed(2) + '</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.suppliercontract_code || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">—</td>' +
+      '<td style="padding:8px 12px;font-size:13px">—</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
+      '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.rid || '—') + '</td>' +
+      '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>';
+    tbody.appendChild(tr);
       '<td style="padding:8px 12px;font-size:13px">' + (item.srid || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.is_legal_entity ? 'Да' : 'Нет') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.trbx_id || '—') + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.installment_cofinancing_amount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.wibes_wb_discount_percent || 0) + '%</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_amount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_discount || 0) + '</td>' +
-      '<td style="padding:8px 12px;text-align:right;font-size:13px">' + (item.cashback_commission_change || 0) + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.order_uid || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.payment_schedule || '—') + '</td>';
+      '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>';
     tbody.appendChild(tr);
   });
   
@@ -2957,6 +3454,12 @@ function displayFinancialData(data) {
     tbody.appendChild(tr);
   });
 }
+</script>
+<script>
+// Загрузка компаний при открытии страницы
+window.addEventListener('DOMContentLoaded', function() {
+  loadBusinesses();
+});
 </script>
 </body>
 </html>`);
@@ -3109,8 +3612,122 @@ app.get('/wb-image', async (req, res) => {
   </svg>`);
 });
 
-app.listen(PORT, () => {
+// ==================== CRON JOB: АВТОСИНХРОНИЗАЦИЯ ====================
+
+// Запуск автоматической синхронизации каждый день в 3:30 утра по Бишкеку
+cron.schedule('30 0 * * *', async () => {
+  console.log('\n🕐 [CRON] Запуск автоматической синхронизации в 3:30 утра (Бишкек)...');
+  try {
+    await syncService.syncAllBusinesses();
+    console.log('✅ [CRON] Автоматическая синхронизация завершена успешно\n');
+  } catch (error) {
+    console.error('❌ [CRON] Ошибка автоматической синхронизации:', error.message);
+  }
+}, {
+  scheduled: true,
+  timezone: "Europe/Moscow" // Московское время (00:30 МСК = 3:30 Бишкек)
+});
+
+console.log('⏰ Cron job настроен: автосинхронизация в 3:30 утра (Бишкек) каждый день');
+
+// ==================== API: РУЧНАЯ СИНХРОНИЗАЦИЯ ====================
+
+// Ручной запуск синхронизации для ВСЕХ магазинов (только для админа)
+app.post('/api/sync-all', requireAuth, async (req, res) => {
+  try {
+    console.log(`\n🔄 [ADMIN] Запуск ручной синхронизации всех магазинов...`);
+    
+    // Запускаем синхронизацию в фоне, не блокируя ответ
+    syncService.syncAllBusinesses().catch(err => {
+      console.error('❌ Ошибка фоновой синхронизации:', err.message);
+    });
+    
+    res.json({
+      success: true,
+      message: 'Синхронизация всех магазинов запущена в фоне. Это может занять несколько минут.'
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Ручной запуск синхронизации для конкретного магазина
+app.post('/api/sync/:businessId', requireAuth, async (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  
+  // Проверяем принадлежность
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const business = await db.getBusinessById(businessId);
+    if (!business) {
+      return res.json({ success: false, error: 'Магазин не найден' });
+    }
+    
+    console.log(`🔄 Ручной запуск синхронизации для магазина ${business.company_name} (ID: ${businessId})`);
+    const results = await syncService.syncAllData(businessId, business.wb_api_key);
+    
+    res.json({
+      success: true,
+      message: 'Синхронизация завершена',
+      results
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// Получить статус последней синхронизации
+app.get('/api/sync-status/:businessId', requireAuth, async (req, res) => {
+  const businessId = parseInt(req.params.businessId);
+  
+  // Проверяем принадлежность
+  const isOwner = await db.verifyBusinessOwnership(businessId, req.account.id);
+  if (!isOwner) {
+    return res.json({ success: false, error: 'Доступ запрещён' });
+  }
+  
+  try {
+    const salesSync = await db.getLastSync(businessId, 'sales');
+    const ordersSync = await db.getLastSync(businessId, 'orders');
+    const financialSync = await db.getLastSync(businessId, 'financial');
+    
+    res.json({
+      success: true,
+      status: {
+        sales: salesSync,
+        orders: ordersSync,
+        financial: financialSync
+      }
+    });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ЗАПУСК СЕРВЕРА ====================
+
+app.listen(PORT, async () => {
   console.log('WB price service started on port', PORT);
+  console.log(`🌍 Server URL: http://localhost:${PORT}`);
+  
+  // Проверяем, есть ли данные в БД. Если нет - запускаем первичную синхронизацию
+  try {
+    const hasData = await db.checkIfDataExists();
+    if (!hasData) {
+      console.log('\n🔄 Первый запуск: данных нет, запускаем синхронизацию всех магазинов в фоне...');
+      syncService.syncAllBusinesses().catch(err => {
+        console.error('❌ Ошибка первичной синхронизации:', err.message);
+      });
+    } else {
+      console.log('ℹ️ Данные уже есть в базе. Следующая автосинхронизация в 3:30 утра (Бишкек).');
+    }
+  } catch (error) {
+    console.error('⚠️ Ошибка проверки данных:', error.message);
+  }
 });
 
 // Дополнительный endpoint для просмотра сырого ответа
@@ -3619,3 +4236,5 @@ app.get('/wb-max-csv', async (req, res) => {
     res.status(500).type('text/csv').send('error,message\n500,Internal error');
   }
 });
+
+

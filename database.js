@@ -1,96 +1,23 @@
 /**
  * Database Module
- * Управление локальной SQLite базой данных для системы аккаунтов и компаний
+ * Управление Supabase (PostgreSQL) базой данных для системы аккаунтов и компаний
  * 
  * Структура:
  * - accounts: Пользовательские аккаунты с авторизацией
  * - businesses: Компании (дочерние сущности аккаунтов) с API ключами WB
+ * - product_costs: Себестоимость товаров
+ * - wb_sales: Продажи WB (кэш)
+ * - wb_orders: Заказы WB (кэш)
+ * - wb_financial_reports: Финансовые отчёты WB (кэш)
+ * - sync_logs: Логи синхронизаций
  * 
  * Логика: При удалении аккаунта автоматически удаляются все его компании (CASCADE)
  */
 
-const Database = require('better-sqlite3');
-const path = require('path');
+require('dotenv').config();
 const crypto = require('crypto');
+const supabase = require('./supabase-client');
 
-// Путь к файлу базы данных
-const DB_PATH = path.join(__dirname, 'wb-service.db');
-
-// Определяем, работаем ли мы на Vercel (read-only filesystem)
-const isVercel = process.env.VERCEL || process.env.NOW_REGION;
-
-let db;
-
-if (isVercel) {
-  // На Vercel используем in-memory базу данных
-  console.log('⚠️ Running on Vercel - using in-memory database');
-  db = new Database(':memory:');
-} else {
-  // Локально используем файловую базу данных
-  console.log('✅ Running locally - using file-based database');
-  db = new Database(DB_PATH, { verbose: console.log });
-}
-
-// Включаем поддержку внешних ключей (CASCADE DELETE)
-db.pragma('foreign_keys = ON');
-
-/**
- * Создание схемы базы данных при первом запуске
- */
-function initializeDatabase() {
-  // Таблица аккаунтов
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS accounts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      email TEXT UNIQUE,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Таблица компаний (businesses)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS businesses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL,
-      company_name TEXT NOT NULL,
-      wb_api_key TEXT NOT NULL,
-      description TEXT,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-    )
-  `);
-
-  // Таблица себестоимости товаров
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS product_costs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      business_id INTEGER NOT NULL,
-      nm_id TEXT NOT NULL,
-      subject TEXT,
-      brand TEXT,
-      cost REAL DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
-      UNIQUE(business_id, nm_id)
-    )
-  `);
-
-  // Индексы для оптимизации запросов
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_businesses_account_id ON businesses(account_id);
-    CREATE INDEX IF NOT EXISTS idx_businesses_is_active ON businesses(is_active);
-    CREATE INDEX IF NOT EXISTS idx_product_costs_business_id ON product_costs(business_id);
-    CREATE INDEX IF NOT EXISTS idx_product_costs_nm_id ON product_costs(nm_id);
-  `);
-
-  console.log('✅ База данных инициализирована');
-}
 
 /**
  * Хеширование пароля с использованием SHA256 + соль
@@ -115,39 +42,47 @@ function verifyPassword(password, storedHash) {
 /**
  * Создание нового аккаунта
  */
-function createAccount(username, password, email = null) {
+async function createAccount(username, password, email = null) {
   const passwordHash = hashPassword(password);
-  const stmt = db.prepare(`
-    INSERT INTO accounts (username, password_hash, email)
-    VALUES (?, ?, ?)
-  `);
   
-  try {
-    const result = stmt.run(username, passwordHash, email);
-    return { id: result.lastInsertRowid, username, email };
-  } catch (error) {
-    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+  const { data, error } = await supabase
+    .from('accounts')
+    .insert({
+      username,
+      password_hash: passwordHash,
+      email
+    })
+    .select()
+    .single();
+  
+  if (error) {
+    if (error.code === '23505') { // PostgreSQL unique violation
       throw new Error('Пользователь с таким именем или email уже существует');
     }
     throw error;
   }
+  
+  return { id: data.id, username: data.username, email: data.email };
 }
 
 /**
  * Авторизация аккаунта
  */
-function authenticateAccount(username, password) {
-  const stmt = db.prepare('SELECT * FROM accounts WHERE username = ?');
-  const account = stmt.get(username);
+async function authenticateAccount(username, password) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('*')
+    .eq('username', username)
+    .single();
   
-  if (!account) {
+  if (error || !data) {
     return null;
   }
   
-  if (verifyPassword(password, account.password_hash)) {
+  if (verifyPassword(password, data.password_hash)) {
     // Не возвращаем хеш пароля в результате
-    delete account.password_hash;
-    return account;
+    delete data.password_hash;
+    return data;
   }
   
   return null;
@@ -156,28 +91,40 @@ function authenticateAccount(username, password) {
 /**
  * Получение аккаунта по ID
  */
-function getAccountById(accountId) {
-  const stmt = db.prepare('SELECT id, username, email, created_at FROM accounts WHERE id = ?');
-  return stmt.get(accountId);
+async function getAccountById(accountId) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('id, username, email, created_at')
+    .eq('id', accountId)
+    .single();
+  
+  return error ? null : data;
 }
 
 /**
  * Удаление аккаунта (автоматически удалит все его компании через CASCADE)
  */
-function deleteAccount(accountId) {
-  const stmt = db.prepare('DELETE FROM accounts WHERE id = ?');
-  const result = stmt.run(accountId);
-  return result.changes > 0;
+async function deleteAccount(accountId) {
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .eq('id', accountId);
+  
+  return !error;
 }
 
 /**
  * Обновление пароля аккаунта
  */
-function updateAccountPassword(accountId, newPassword) {
+async function updateAccountPassword(accountId, newPassword) {
   const passwordHash = hashPassword(newPassword);
-  const stmt = db.prepare('UPDATE accounts SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
-  const result = stmt.run(passwordHash, accountId);
-  return result.changes > 0;
+  
+  const { error } = await supabase
+    .from('accounts')
+    .update({ password_hash: passwordHash })
+    .eq('id', accountId);
+  
+  return !error;
 }
 
 // ==================== КОМПАНИИ ====================
@@ -185,183 +132,182 @@ function updateAccountPassword(accountId, newPassword) {
 /**
  * Создание новой компании
  */
-function createBusiness(accountId, companyName, wbApiKey, description = null) {
-  const stmt = db.prepare(`
-    INSERT INTO businesses (account_id, company_name, wb_api_key, description)
-    VALUES (?, ?, ?, ?)
-  `);
+async function createBusiness(accountId, companyName, wbApiKey, description = null) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .insert({
+      account_id: accountId,
+      company_name: companyName,
+      wb_api_key: wbApiKey,
+      description,
+      is_active: true // 🔥 Новые магазины создаются сразу активными
+    })
+    .select()
+    .single();
   
-  const result = stmt.run(accountId, companyName, wbApiKey, description);
+  if (error) throw error;
+  
   return {
-    id: result.lastInsertRowid,
-    account_id: accountId,
-    company_name: companyName,
-    description
+    id: data.id,
+    account_id: data.account_id,
+    company_name: data.company_name,
+    description: data.description,
+    is_active: data.is_active
   };
 }
 
 /**
  * Получение всех компаний аккаунта
  */
-function getBusinessesByAccount(accountId, activeOnly = false) {
-  let query = 'SELECT * FROM businesses WHERE account_id = ?';
-  if (activeOnly) {
-    query += ' AND is_active = 1';
-  }
-  query += ' ORDER BY created_at DESC';
+async function getBusinessesByAccount(accountId, activeOnly = false) {
+  let query = supabase
+    .from('businesses')
+    .select('*')
+    .eq('account_id', accountId);
   
-  const stmt = db.prepare(query);
-  return stmt.all(accountId);
+  if (activeOnly) {
+    query = query.eq('is_active', true);
+  }
+  
+  query = query.order('created_at', { ascending: false });
+  
+  const { data, error } = await query;
+  
+  return error ? [] : data;
 }
 
 /**
  * Получение компании по ID
  */
-function getBusinessById(businessId) {
-  const stmt = db.prepare('SELECT * FROM businesses WHERE id = ?');
-  return stmt.get(businessId);
+async function getBusinessById(businessId) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .select('*')
+    .eq('id', businessId)
+    .single();
+  
+  return error ? null : data;
 }
 
 /**
  * Обновление данных компании
  */
-function updateBusiness(businessId, updates) {
+async function updateBusiness(businessId, updates) {
   const allowedFields = ['company_name', 'wb_api_key', 'description', 'is_active'];
-  const fields = Object.keys(updates).filter(key => allowedFields.includes(key));
+  const filteredUpdates = {};
   
-  if (fields.length === 0) {
+  for (const key of Object.keys(updates)) {
+    if (allowedFields.includes(key)) {
+      filteredUpdates[key] = updates[key];
+    }
+  }
+  
+  if (Object.keys(filteredUpdates).length === 0) {
     return false;
   }
   
-  const setClause = fields.map(f => `${f} = ?`).join(', ');
-  const values = fields.map(f => updates[f]);
+  const { error } = await supabase
+    .from('businesses')
+    .update(filteredUpdates)
+    .eq('id', businessId);
   
-  const stmt = db.prepare(`
-    UPDATE businesses 
-    SET ${setClause}, updated_at = CURRENT_TIMESTAMP 
-    WHERE id = ?
-  `);
-  
-  const result = stmt.run(...values, businessId);
-  return result.changes > 0;
+  return !error;
 }
 
 /**
  * Удаление компании
  */
-function deleteBusiness(businessId) {
-  const stmt = db.prepare('DELETE FROM businesses WHERE id = ?');
-  const result = stmt.run(businessId);
-  return result.changes > 0;
+async function deleteBusiness(businessId) {
+  const { error } = await supabase
+    .from('businesses')
+    .delete()
+    .eq('id', businessId);
+  
+  return !error;
 }
 
 /**
  * Проверка принадлежности компании к аккаунту
  */
-function verifyBusinessOwnership(businessId, accountId) {
-  const stmt = db.prepare('SELECT account_id FROM businesses WHERE id = ?');
-  const business = stmt.get(businessId);
-  return business && business.account_id === accountId;
+async function verifyBusinessOwnership(businessId, accountId) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .select('account_id')
+    .eq('id', businessId)
+    .single();
+  
+  return !error && data && data.account_id === accountId;
 }
 
 /**
  * Получение активной компании (по умолчанию первая активная)
  */
-function getDefaultBusiness(accountId) {
-  const stmt = db.prepare(`
-    SELECT * FROM businesses 
-    WHERE account_id = ? AND is_active = 1 
-    ORDER BY created_at ASC 
-    LIMIT 1
-  `);
-  return stmt.get(accountId);
+async function getDefaultBusiness(accountId) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .single();
+  
+  return error ? null : data;
 }
 
 /**
  * Получение статистики по аккаунту
  */
-function getAccountStats(accountId) {
-  const stmt = db.prepare(`
-    SELECT 
-      COUNT(*) as total_businesses,
-      SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as active_businesses
-    FROM businesses
-    WHERE account_id = ?
-  `);
-  return stmt.get(accountId);
+async function getAccountStats(accountId) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .select('is_active')
+    .eq('account_id', accountId);
+  
+  if (error) {
+    return { total_businesses: 0, active_businesses: 0 };
+  }
+  
+  return {
+    total_businesses: data.length,
+    active_businesses: data.filter(b => b.is_active).length
+  };
 }
 
-// ==================== МИГРАЦИЯ ДАННЫХ ====================
+// ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
 /**
- * Миграция существующих API ключей из файла wb-api-key.txt
- * Создаёт дефолтный аккаунт и компанию при первом запуске
+ * Создание дефолтного аккаунта при первом запуске (если нет аккаунтов)
  */
-function migrateFromLegacyApiKey() {
-  const fs = require('fs');
-  const legacyKeyPath = path.join(__dirname, 'wb-api-key.txt');
-  
-  // Проверяем, есть ли уже аккаунты в БД
-  const accountCount = db.prepare('SELECT COUNT(*) as count FROM accounts').get();
-  
-  if (accountCount.count > 0 && !isVercel) {
-    console.log('ℹ️ Аккаунты уже существуют в БД, миграция не требуется');
-    return;
-  }
-  
-  // На Vercel всегда создаём дефолтный аккаунт при старте
-  if (isVercel && accountCount.count > 0) {
-    console.log('ℹ️ Vercel: Аккаунты уже созданы в памяти');
-    return;
-  }
-  
-  // На Vercel или если нет файла - создаём только дефолтный аккаунт
-  if (isVercel || !fs.existsSync(legacyKeyPath)) {
-    try {
-      // Создаём дефолтный аккаунт для первого входа
-      const account = createAccount('admin', 'tarelkastakan', null);
-      console.log(`✅ Создан дефолтный аккаунт: ${account.username}`);
-      
-      if (isVercel) {
-        console.log('ℹ️ Vercel: БД в памяти готова, компании можно добавить через UI');
-      }
-    } catch (error) {
-      console.error('❌ Ошибка создания дефолтного аккаунта:', error.message);
-    }
-    return;
-  }
-  
-  // Локально: пытаемся мигрировать из файла
+async function initializeDefaultAccount() {
   try {
-    const legacyKey = fs.readFileSync(legacyKeyPath, 'utf-8').trim();
+    // Проверяем, есть ли уже аккаунты
+    const { data, error } = await supabase
+      .from('accounts')
+      .select('id')
+      .limit(1);
     
-    if (!legacyKey) {
-      console.log('ℹ️ Файл wb-api-key.txt пустой');
-      // Всё равно создаём дефолтный аккаунт
-      const account = createAccount('admin', 'tarelkastakan', null);
-      console.log(`✅ Создан дефолтный аккаунт: ${account.username}`);
+    if (error) {
+      console.error('❌ Ошибка проверки аккаунтов:', error);
+      return;
+    }
+    
+    if (data && data.length > 0) {
+      console.log('ℹ️ Аккаунты уже существуют в Supabase');
       return;
     }
     
     // Создаём дефолтный аккаунт
-    const account = createAccount('admin', 'tarelkastakan', null);
-    console.log(`✅ Создан дефолтный аккаунт: ${account.username}`);
-    
-    // Создаём первую компанию с мигрированным ключом
-    const business = createBusiness(
-      account.id,
-      'Моя компания',
-      legacyKey,
-      'Мигрировано из wb-api-key.txt'
-    );
-    console.log(`✅ Создана компания: ${business.company_name}`);
-    
-    // Переименовываем старый файл
-    fs.renameSync(legacyKeyPath, legacyKeyPath + '.backup');
-    console.log('✅ Миграция завершена, файл wb-api-key.txt переименован в .backup');
+    const account = await createAccount('admin', 'tarelkastakan', null);
+    console.log(`✅ Создан дефолтный аккаунт в Supabase: ${account.username}`);
     
   } catch (error) {
-    console.error('❌ Ошибка миграции:', error.message);
+    // Аккаунт может уже существовать (уникальный username)
+    if (error.message.includes('уже существует')) {
+      console.log('ℹ️ Дефолтный аккаунт уже существует');
+    } else {
+      console.error('❌ Ошибка создания дефолтного аккаунта:', error.message);
+    }
   }
 }
 
@@ -370,84 +316,210 @@ function migrateFromLegacyApiKey() {
 /**
  * Сохранить/обновить себестоимость товара
  */
-function upsertProductCost(businessId, nmId, subject, brand, cost) {
-  const stmt = db.prepare(`
-    INSERT INTO product_costs (business_id, nm_id, subject, brand, cost)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(business_id, nm_id) 
-    DO UPDATE SET 
-      subject = excluded.subject,
-      brand = excluded.brand,
-      cost = excluded.cost,
-      updated_at = CURRENT_TIMESTAMP
-  `);
+async function upsertProductCost(businessId, nmId, subject, brand, customName, cost) {
+  const { error } = await supabase
+    .from('product_costs')
+    .upsert({
+      business_id: businessId,
+      nm_id: nmId,
+      subject,
+      brand,
+      custom_name: customName,
+      cost
+    }, {
+      onConflict: 'business_id,nm_id'
+    });
   
-  const result = stmt.run(businessId, nmId, subject, brand, cost);
-  return result.changes > 0;
+  return !error;
 }
 
 /**
  * Массовое сохранение себестоимости
  */
-function bulkUpsertProductCosts(businessId, products) {
-  const stmt = db.prepare(`
-    INSERT INTO product_costs (business_id, nm_id, subject, brand, cost)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(business_id, nm_id) 
-    DO UPDATE SET 
-      subject = excluded.subject,
-      brand = excluded.brand,
-      cost = excluded.cost,
-      updated_at = CURRENT_TIMESTAMP
-  `);
+async function bulkUpsertProductCosts(businessId, products) {
+  const items = products.map(p => ({
+    business_id: businessId,
+    nm_id: p.nmId,
+    brand: p.brand,
+    custom_name: p.customName || '',
+    cost: p.cost
+  }));
   
-  const transaction = db.transaction((items) => {
-    for (const item of items) {
-      stmt.run(businessId, item.nmId, item.subject, item.brand, item.cost);
-    }
-  });
+  const { error } = await supabase
+    .from('product_costs')
+    .upsert(items, {
+      onConflict: 'business_id,nm_id'
+    });
   
-  transaction(products);
-  return products.length;
+  return error ? 0 : products.length;
 }
 
 /**
  * Получить себестоимость всех товаров компании
  */
-function getProductCostsByBusiness(businessId) {
-  const stmt = db.prepare('SELECT * FROM product_costs WHERE business_id = ? ORDER BY updated_at DESC');
-  return stmt.all(businessId);
+async function getProductCostsByBusiness(businessId) {
+  const { data, error } = await supabase
+    .from('product_costs')
+    .select('*')
+    .eq('business_id', businessId)
+    .order('updated_at', { ascending: false });
+  
+  return error ? [] : data;
 }
 
 /**
  * Получить себестоимость конкретного товара
  */
-function getProductCost(businessId, nmId) {
-  const stmt = db.prepare('SELECT * FROM product_costs WHERE business_id = ? AND nm_id = ?');
-  return stmt.get(businessId, nmId);
+async function getProductCost(businessId, nmId) {
+  const { data, error } = await supabase
+    .from('product_costs')
+    .select('*')
+    .eq('business_id', businessId)
+    .eq('nm_id', nmId)
+    .single();
+  
+  return error ? null : data;
 }
 
 /**
  * Удалить себестоимость товара
  */
-function deleteProductCost(businessId, nmId) {
-  const stmt = db.prepare('DELETE FROM product_costs WHERE business_id = ? AND nm_id = ?');
-  const result = stmt.run(businessId, nmId);
-  return result.changes > 0;
+async function deleteProductCost(businessId, nmId) {
+  const { error } = await supabase
+    .from('product_costs')
+    .delete()
+    .eq('business_id', businessId)
+    .eq('nm_id', nmId);
+  
+  return !error;
 }
 
-// ==================== ИНИЦИАЛИЗАЦИЯ ====================
+// ==================== КЭШИРОВАННЫЕ ДАННЫЕ WB ====================
 
-// Создаём схему при импорте модуля
-initializeDatabase();
+/**
+ * Получить продажи из БД (кэш)
+ */
+async function getSalesFromCache(businessId, dateFrom = null, dateTo = null) {
+  let query = supabase
+    .from('wb_sales')
+    .select('*')
+    .eq('business_id', businessId)
+    .order('sale_dt', { ascending: false });
+  
+  if (dateFrom) {
+    query = query.gte('sale_dt', dateFrom);
+  }
+  
+  if (dateTo) {
+    query = query.lte('sale_dt', dateTo);
+  }
+  
+  const { data, error } = await query;
+  
+  return error ? [] : data;
+}
 
-// Пытаемся мигрировать старые данные
-migrateFromLegacyApiKey();
+/**
+ * Получить заказы из БД (кэш)
+ */
+async function getOrdersFromCache(businessId, dateFrom = null, dateTo = null) {
+  let query = supabase
+    .from('wb_orders')
+    .select('*')
+    .eq('business_id', businessId)
+    .order('order_dt', { ascending: false });
+  
+  if (dateFrom) {
+    query = query.gte('order_dt', dateFrom);
+  }
+  
+  if (dateTo) {
+    query = query.lte('order_dt', dateTo);
+  }
+  
+  const { data, error } = await query;
+  
+  return error ? [] : data;
+}
+
+/**
+ * Получить финансовый отчёт из БД (кэш)
+ */
+async function getFinancialReportFromCache(businessId, dateFrom = null, dateTo = null) {
+  let query = supabase
+    .from('wb_financial_reports')
+    .select('*')
+    .eq('business_id', businessId)
+    .order('sale_dt', { ascending: false });
+  
+  if (dateFrom) {
+    query = query.gte('sale_dt', dateFrom);
+  }
+  
+  if (dateTo) {
+    query = query.lte('sale_dt', dateTo);
+  }
+  
+  const { data, error } = await query;
+  
+  return error ? [] : data;
+}
+
+/**
+ * Получить последнюю синхронизацию магазина
+ */
+async function getLastSync(businessId, syncType = null) {
+  let query = supabase
+    .from('sync_logs')
+    .select('*')
+    .eq('business_id', businessId)
+    .eq('status', 'success')
+    .order('completed_at', { ascending: false })
+    .limit(1);
+  
+  if (syncType) {
+    query = query.eq('sync_type', syncType);
+  }
+  
+  const { data, error } = await query;
+  
+  return (error || !data || data.length === 0) ? null : data[0];
+}
+
+// Инициализация при запуске модуля
+initializeDefaultAccount().catch(err => {
+  console.error('❌ Ошибка инициализации дефолтного аккаунта:', err);
+});
+
+// ==================== ПРОВЕРКА НАЛИЧИЯ ДАННЫХ ====================
+
+/**
+ * Проверяет, есть ли хоть какие-то данные в таблицах продаж/заказов
+ * Используется для определения, нужна ли первичная синхронизация
+ */
+async function checkIfDataExists() {
+  try {
+    const { count, error } = await supabase
+      .from('wb_sales')
+      .select('*', { count: 'exact', head: true })
+      .limit(1);
+    
+    if (error) {
+      console.error('Ошибка проверки данных:', error);
+      return false;
+    }
+    
+    return count > 0;
+  } catch (err) {
+    console.error('Ошибка checkIfDataExists:', err);
+    return false;
+  }
+}
 
 // ==================== ЭКСПОРТ ====================
 
 module.exports = {
-  db,
+  supabase, // Экспортируем клиент Supabase для прямого доступа
   // Аккаунты
   createAccount,
   authenticateAccount,
@@ -468,5 +540,13 @@ module.exports = {
   bulkUpsertProductCosts,
   getProductCostsByBusiness,
   getProductCost,
-  deleteProductCost
+  deleteProductCost,
+  // Кэш WB данных
+  getSalesFromCache,
+  getOrdersFromCache,
+  getFinancialReportFromCache,
+  getLastSync,
+  // Утилиты
+  checkIfDataExists
 };
+
