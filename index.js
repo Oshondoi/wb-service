@@ -1317,6 +1317,7 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
 .feature-card p{margin:0;color:#636e72;font-size:14px;line-height:1.5}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center}
 .modal.active{display:flex}
+.modal-overlay{z-index:2000}
 .modal-content{background:#fff;border-radius:12px;padding:32px;max-width:500px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,0.2);animation:slideIn 0.3s ease}
 @keyframes slideIn{from{transform:translateY(-50px);opacity:0}to{transform:translateY(0);opacity:1}}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
@@ -1438,11 +1439,24 @@ h1{margin:0 0 20px;font-size:32px;color:#2d3436}
     </div>
   </div>
 
+  <!-- Модальное окно: Детали отчёта -->
+  <div id="reportInfoModal" class="modal modal-overlay" onclick="closeModalOnOutsideClick(event, 'reportInfoModal')">
+    <div class="modal-content" style="max-width:600px;width:600px" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2>📋 Детали отчёта</h2>
+        <button class="close-btn" onclick="closeModal('reportInfoModal')">&times;</button>
+      </div>
+      <div id="reportInfoContent" style="padding:20px;max-height:70vh;overflow-y:auto">
+      </div>
+    </div>
+  </div>
+
   <!-- Модальное окно: Финансовый отчёт -->
   <div id="finReportModal" class="modal" onclick="closeModalOnOutsideClick(event, 'finReportModal')">
     <div class="modal-content" style="max-width:95vw;width:95vw;max-height:90vh" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h2>📈 Финансовый отчёт</h2>
+        <button onclick="showReportSummary()" style="padding:10px 20px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;margin-right:auto;transition:all 0.3s;box-shadow:0 3px 10px rgba(102,126,234,0.3)">📊 Сводная информация</button>
         <button class="close-btn" onclick="closeModal('finReportModal')">&times;</button>
       </div>
       <div id="finReportTabs" style="display:none;gap:0;margin-bottom:0;flex-wrap:wrap;background:#f8f9fa;padding:0 20px"></div>
@@ -1710,6 +1724,9 @@ let currentBusinessId = null;
 let finReportDataLoaded = false;
 let salesReportDataLoaded = false;
 let ordersDataLoaded = false;
+
+// Глобальное хранилище данных финансового отчёта
+let currentFinReportData = [];
 
 // Переменная для хранения выбранного типа отчета
 let selectedReportType = null;
@@ -2207,6 +2224,122 @@ function loadSavedCosts() {
     console.error('Ошибка загрузки себестоимостей:', err);
     renderCostTable(); // Рендерим таблицу даже при ошибке
   });
+}
+
+// Показать детальную информацию об отчёте
+function showReportSummary() {
+  if (!currentFinReportData || currentFinReportData.length === 0) {
+    alert('❌ Нет данных финансового отчёта');
+    return;
+  }
+  
+  // Берем первую запись для получения общей информации об отчёте
+  const reportItem = currentFinReportData[0];
+  
+  // Считаем итоговые суммы по ВСЕМ записям текущего отчёта
+  let totalSales = 0;
+  let totalForPay = 0;
+  let totalStorage = 0;
+  let totalCommission = 0;
+  let totalLogistics = 0;
+  let totalPenalty = 0;
+  let totalRetailAmount = 0;
+  
+  currentFinReportData.forEach(item => {
+    totalRetailAmount += (item.retail_amount || 0) * (item.quantity || 1);
+    totalForPay += (item.ppvz_for_pay || 0);
+    totalStorage += (item.storage_fee || 0);
+    totalCommission += (item.ppvz_sales_commission || 0);
+    totalLogistics += (item.delivery_rub || 0);
+    totalPenalty += (item.penalty || 0);
+  });
+  
+  totalSales = totalRetailAmount;
+  
+  // Формируем HTML с информацией
+  const content = document.getElementById('reportInfoContent');
+  content.innerHTML = 
+    '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px">' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">№ отчета</div>' +
+        '<div style="font-size:18px;font-weight:700;color:#2d3436">' + (reportItem.realizationreport_id || '—') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Юридическое лицо</div>' +
+        '<div style="font-size:16px;font-weight:600;color:#2d3436">' + (reportItem.ppvz_supplier_name || '—') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Период</div>' +
+        '<div style="font-size:14px;color:#2d3436">с ' + (reportItem.date_from ? new Date(reportItem.date_from).toLocaleDateString('ru-RU') : '—') + ' по ' + (reportItem.date_to ? new Date(reportItem.date_to).toLocaleDateString('ru-RU') : '—') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Дата формирования</div>' +
+        '<div style="font-size:14px;color:#2d3436">' + (reportItem.create_dt ? new Date(reportItem.create_dt).toLocaleDateString('ru-RU') : '—') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Тип отчёта</div>' +
+        '<div style="font-size:14px;color:#2d3436">' + (reportItem.doc_type_name || 'Основной') + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Валюта</div>' +
+        '<div style="font-size:14px;color:#2d3436">' + (reportItem.currency_name || 'KGS') + '</div>' +
+      '</div>' +
+    '</div>' +
+    
+    '<div style="border-top:2px solid #e9ecef;margin:20px 0;padding-top:20px">' +
+      '<h3 style="margin:0 0 16px 0;font-size:16px;color:#2d3436">📊 Финансовые показатели</h3>' +
+      '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px">' +
+        '<div style="background:#e8fff6;padding:16px;border-radius:8px">' +
+          '<div style="color:#00b894;font-size:12px;margin-bottom:4px;font-weight:600">Продажа</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#00b894">' + totalSales.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+        '<div style="background:#e8fff6;padding:16px;border-radius:8px">' +
+          '<div style="color:#00b894;font-size:12px;margin-bottom:4px;font-weight:600">К перечислению за товар</div>' +
+          '<div style="font-size:24px;font-weight:700;color:#00b894">' + totalForPay.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+        '<div style="background:#fff5e8;padding:16px;border-radius:8px">' +
+          '<div style="color:#e17055;font-size:12px;margin-bottom:4px;font-weight:600">Стоимость хранения</div>' +
+          '<div style="font-size:20px;font-weight:700;color:#e17055">' + totalStorage.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+        '<div style="background:#ffe8e8;padding:16px;border-radius:8px">' +
+          '<div style="color:#d63031;font-size:12px;margin-bottom:4px;font-weight:600">Комиссия</div>' +
+          '<div style="font-size:20px;font-weight:700;color:#d63031">' + totalCommission.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+        '<div style="background:#fff5e8;padding:16px;border-radius:8px">' +
+          '<div style="color:#e17055;font-size:12px;margin-bottom:4px;font-weight:600">Стоимость логистики</div>' +
+          '<div style="font-size:20px;font-weight:700;color:#e17055">' + totalLogistics.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+        '<div style="background:#ffe8e8;padding:16px;border-radius:8px">' +
+          '<div style="color:#d63031;font-size:12px;margin-bottom:4px;font-weight:600">Общая сумма штрафов</div>' +
+          '<div style="font-size:20px;font-weight:700;color:#d63031">' + totalPenalty.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    
+    '<div style="border-top:2px solid #e9ecef;margin:20px 0;padding-top:20px">' +
+      '<h3 style="margin:0 0 12px 0;font-size:16px;color:#2d3436">🏢 Информация о партнёре</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr;gap:12px">' +
+        '<div>' +
+          '<div style="color:#636e72;font-size:12px;margin-bottom:4px">ИНН</div>' +
+          '<div style="font-size:14px;color:#2d3436">' + (reportItem.ppvz_inn || '—') + '</div>' +
+        '</div>' +
+        '<div>' +
+          '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Номер офиса</div>' +
+          '<div style="font-size:14px;color:#2d3436">' + (reportItem.ppvz_office_id || '—') + '</div>' +
+        '</div>' +
+        '<div>' +
+          '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Наименование офиса доставки</div>' +
+          '<div style="font-size:14px;color:#2d3436">' + (reportItem.ppvz_office_name || '—') + '</div>' +
+        '</div>' +
+        '<div>' +
+          '<div style="color:#636e72;font-size:12px;margin-bottom:4px">Итого к оплате</div>' +
+          '<div style="font-size:28px;font-weight:700;color:#00b894">' + totalForPay.toFixed(2) + ' ₽</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  
+  // Открываем модалку
+  document.getElementById('reportInfoModal').style.display = 'flex';
 }
 
 // Получить URL изображения товара по nmId
@@ -3292,8 +3425,12 @@ function renderFinReportData(data) {
   
   if (!data || data.length === 0) {
     tbody.innerHTML = '<tr><td colspan="71" style="padding:40px;text-align:center;color:#636e72">Нет данных</td></tr>';
+    currentFinReportData = []; // Очищаем при отсутствии данных
     return;
   }
+  
+  // Сохраняем данные глобально для доступа из showReportSummary
+  currentFinReportData = data;
   
   tbody.innerHTML = '';
   let rowNumber = 0;
@@ -3375,9 +3512,6 @@ function renderFinReportData(data) {
       '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
       '<td style="padding:8px 12px;text-align:right;font-size:13px">0</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.rid || '—') + '</td>' +
-      '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>';
-    tbody.appendChild(tr);
-      '<td style="padding:8px 12px;font-size:13px">' + (item.srid || '—') + '</td>' +
       '<td style="padding:8px 12px;font-size:13px">' + (item.report_type || '—') + '</td>';
     tbody.appendChild(tr);
   });
