@@ -551,7 +551,7 @@ app.get('/api/cash/debts', requireAuth, async (req, res) => {
 });
 
 app.post('/api/cash/debts', requireAuth, async (req, res) => {
-  const { debt_type, amount, counterparty, due_date, status, note, business_id } = req.body;
+  const { debt_date, debt_type, amount, counterparty, due_date, status, note, business_id } = req.body;
 
   if (!debt_type || !['receivable', 'payable'].includes(debt_type)) {
     return res.json({ success: false, error: 'Неверный тип долга' });
@@ -570,6 +570,7 @@ app.post('/api/cash/debts', requireAuth, async (req, res) => {
 
   try {
     const item = await db.createCashDebt(req.account.id, {
+      debt_date: debt_date || null,
       debt_type,
       amount: Number(amount),
       counterparty,
@@ -1618,6 +1619,10 @@ input[type=number]{-moz-appearance:textfield}
 .cash-pill.receivable{background:rgba(56,189,248,0.2);color:#93c5fd;border:1px solid rgba(56,189,248,0.35)}
 .cash-pill.payable{background:rgba(245,158,11,0.2);color:#fcd34d;border:1px solid rgba(245,158,11,0.35)}
 .cash-muted{color:#94a3b8;font-size:12px}
+.cash-sub-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:2px solid rgba(148,163,184,0.15)}
+.cash-sub-tab{background:none;border:none;padding:12px 20px;cursor:pointer;font-size:14px;font-weight:600;color:#94a3b8;border-bottom:3px solid transparent;transition:all 0.2s}
+.cash-sub-tab:hover{color:#e2e8f0;background:rgba(56,189,248,0.1)}
+.cash-sub-tab.active{color:#38bdf8;border-bottom-color:#38bdf8}
 .range-btn{display:flex;gap:8px;align-items:center;background:rgba(15,23,42,0.85);padding:10px 14px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;cursor:pointer;font-size:12px;font-weight:700;color:#e2e8f0;transition:all 0.2s;letter-spacing:0.3px;text-transform:uppercase}
 .range-btn:hover{border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.2);transform:translateY(-2px)}
 .range-value{color:#93c5fd;font-weight:700}
@@ -1663,13 +1668,8 @@ input[type=number]{-moz-appearance:textfield}
     </div>
   </div>
 
-
-  <div class="cash-tabs">
-    <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
-    <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
-  </div>
-
-  <div id="cashflowTransactionsTab">
+  <!-- Балансы вынесены отдельно -->
+  <div class="section">
     <div class="cash-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
       <div class="stat-card" style="--accent:#38bdf8">
         <div class="stat-label">💵 Кассовый баланс</div>
@@ -1692,6 +1692,14 @@ input[type=number]{-moz-appearance:textfield}
         <div class="stat-hint">С учётом долгов</div>
       </div>
     </div>
+  </div>
+
+  <div class="cash-tabs">
+    <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
+    <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
+  </div>
+
+  <div id="cashflowTransactionsTab">
 
     <div class="cash-form">
       <div class="cash-form-row">
@@ -1755,13 +1763,25 @@ input[type=number]{-moz-appearance:textfield}
   </div>
 
   <div id="cashflowDebtsTab" style="display:none">
+    <!-- Форма создания долга (всегда видна) -->
     <div class="cash-form">
       <div class="cash-form-row">
+        <div>
+          <div class="cash-label">Дата</div>
+          <input id="cashDebtDate" type="date" class="cash-input" />
+        </div>
         <div>
           <div class="cash-label">Тип долга</div>
           <select id="cashDebtType" class="cash-input">
             <option value="receivable">Нам должны</option>
             <option value="payable">Мы должны</option>
+          </select>
+        </div>
+        <div>
+          <div class="cash-label">Тип операции</div>
+          <select id="cashDebtOperationType" class="cash-input">
+            <option value="increase">Наращивание</option>
+            <option value="decrease">Погашение</option>
           </select>
         </div>
         <div>
@@ -1790,24 +1810,56 @@ input[type=number]{-moz-appearance:textfield}
       </div>
     </div>
 
-    <div style="max-height:50vh;overflow:auto">
-      <table class="cash-table">
-        <thead>
-          <tr>
-            <th>Тип</th>
-            <th>Сумма</th>
-            <th>Контрагент</th>
-            <th>Срок</th>
-            <th>Магазин</th>
-            <th>Статус</th>
-            <th>Комментарий</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="cashDebtsBody">
-          <tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
-        </tbody>
-      </table>
+    <!-- Подвкладки -->
+    <div class="cash-sub-tabs">
+      <button class="cash-sub-tab active" onclick="switchDebtSubTab('summary')">Долги</button>
+      <button class="cash-sub-tab" onclick="switchDebtSubTab('operations')">Операции</button>
+    </div>
+
+    <!-- Вкладка: Сводка долгов -->
+    <div id="debtSummaryTab" style="display:block">
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Контрагент</th>
+              <th>Тип</th>
+              <th>Всего</th>
+              <th>Оплачено</th>
+              <th>Остаток</th>
+              <th>Статус</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="debtSummaryBody">
+            <tr><td colspan="7" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Вкладка: Операции с долгами -->
+    <div id="debtOperationsTab" style="display:none">
+      <div style="max-height:50vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Дата операции</th>
+              <th>Тип</th>
+              <th>Сумма</th>
+              <th>Контрагент</th>
+              <th>Срок</th>
+              <th>Магазин</th>
+              <th>Статус</th>
+              <th>Комментарий</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="cashDebtsBody">
+            <tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
@@ -1922,7 +1974,6 @@ function initCashRange() {
   document.getElementById('cashDateFrom').value = savedFrom || dateFrom;
   document.getElementById('cashDateTo').value = savedTo || dateTo;
   document.getElementById('cashTxDate').value = dateTo;
-  document.getElementById('cashDebtDueDate').value = dateTo;
   updateCashRangeDisplay();
 }
 
@@ -2187,11 +2238,13 @@ function switchCashTab(tab) {
     debtsTab.style.display = 'block';
     btnTransactions.classList.remove('active');
     btnDebts.classList.add('active');
+    localStorage.setItem('cashActiveTab', 'debts');
   } else {
     transactionsTab.style.display = 'block';
     debtsTab.style.display = 'none';
     btnTransactions.classList.add('active');
     btnDebts.classList.remove('active');
+    localStorage.setItem('cashActiveTab', 'transactions');
   }
 }
 
@@ -2632,6 +2685,44 @@ function deleteCashTransaction(id) {
   .catch(err => alert('❌ ' + err.message));
 }
 
+function switchDebtSubTab(tab) {
+  const tabs = document.querySelectorAll('.cash-sub-tab');
+  const contents = document.querySelectorAll('.debt-sub-content');
+  
+  tabs.forEach(t => t.classList.remove('active'));
+  contents.forEach(c => c.style.display = 'none');
+  
+  if (tab === 'summary') {
+    tabs[0].classList.add('active');
+    const summaryTab = document.getElementById('debtSummaryTab');
+    if (summaryTab) summaryTab.style.display = 'block';
+  } else if (tab === 'operations') {
+    tabs[1].classList.add('active');
+    const operationsTab = document.getElementById('debtOperationsTab');
+    if (operationsTab) operationsTab.style.display = 'block';
+  }
+}
+
+function switchDebtSubTab(tab) {
+  const tabs = document.querySelectorAll('.cash-sub-tab');
+  const summaryTab = document.getElementById('debtSummaryTab');
+  const operationsTab = document.getElementById('debtOperationsTab');
+  
+  if (!tabs.length || !summaryTab || !operationsTab) return;
+  
+  tabs.forEach(t => t.classList.remove('active'));
+  
+  if (tab === 'summary') {
+    tabs[0].classList.add('active');
+    summaryTab.style.display = 'block';
+    operationsTab.style.display = 'none';
+  } else if (tab === 'operations') {
+    tabs[1].classList.add('active');
+    summaryTab.style.display = 'none';
+    operationsTab.style.display = 'block';
+  }
+}
+
 function loadCashDebts() {
   fetch('/api/cash/debts', {
     headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
@@ -2641,21 +2732,83 @@ function loadCashDebts() {
     if (!data.success) throw new Error(data.error || 'Ошибка загрузки');
     cashDebts = data.items || [];
     renderCashDebts();
+    renderDebtSummary();
+    updateCashSummary();
   })
   .catch(err => {
     const body = document.getElementById('cashDebtsBody');
-    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
+    if (body) body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
   });
+}
+
+function renderDebtSummary() {
+  const body = document.getElementById('debtSummaryBody');
+  if (!body) return;
+  
+  const summary = {};
+  
+  cashDebts.forEach(debt => {
+    const key = debt.counterparty || 'Без контрагента';
+    if (!summary[key]) {
+      summary[key] = {
+        counterparty: key,
+        debt_type: debt.debt_type,
+        total_amount: 0,
+        paid_amount: 0,
+        open_count: 0,
+        closed_count: 0
+      };
+    }
+    
+    const amount = Number(debt.amount || 0);
+    summary[key].total_amount += amount;
+    
+    if (debt.status === 'closed') {
+      summary[key].closed_count++;
+    } else {
+      summary[key].open_count++;
+    }
+  });
+  
+  const summaries = Object.values(summary);
+  
+  if (!summaries.length) {
+    body.innerHTML = '<tr><td colspan="7" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
+    return;
+  }
+  
+  const rows = summaries.map(item => {
+    const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
+    const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
+    const remainder = item.total_amount - item.paid_amount;
+    const statusLabel = item.open_count > 0 ? 'Открыт' : 'Закрыт';
+    const counterpartyEncoded = encodeURIComponent(item.counterparty || '—');
+    
+    return '<tr>' +
+      '<td>' + (item.counterparty || '—') + '</td>' +
+      '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
+      '<td>' + formatMoney(item.total_amount) + '</td>' +
+      '<td>' + formatMoney(item.paid_amount) + '</td>' +
+      '<td><strong>' + formatMoney(remainder) + '</strong></td>' +
+      '<td>' + statusLabel + '</td>' +
+      '<td style="text-align:right">' +
+      '<button class="api-btn" style="padding:6px 10px" onclick="switchDebtSubTab(\\\'operations\\\')">Детали</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+  
+  body.innerHTML = rows;
 }
 
 function renderCashDebts() {
   const body = document.getElementById('cashDebtsBody');
   if (!cashDebts.length) {
-    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
     return;
   }
 
   const rows = cashDebts.map(item => {
+    const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
     const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
     const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
@@ -2665,6 +2818,7 @@ function renderCashDebts() {
       ? '<button class="api-btn" style="padding:6px 10px" onclick="closeCashDebt(' + item.id + ')">Закрыть</button>'
       : '';
     return '<tr>' +
+      '<td>' + debtDate + '</td>' +
       '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
       '<td>' + formatMoney(item.amount) + '</td>' +
       '<td>' + (item.counterparty || '—') + '</td>' +
@@ -2688,9 +2842,11 @@ function addCashDebt() {
     return;
   }
 
-  openCashConfirmModal('Добавить долг?', async () => {
+  openCashConfirmModal('Добавить операцию долга?', async () => {
     try {
+      const debtDate = document.getElementById('cashDebtDate').value;
       const debtType = document.getElementById('cashDebtType').value;
+      const operationType = document.getElementById('cashDebtOperationType').value;
       const rawCounterparty = document.getElementById('cashDebtCounterparty').value === '__new__' ? '' : document.getElementById('cashDebtCounterparty').value;
       const dueDate = document.getElementById('cashDebtDueDate').value;
       const rawBusinessId = document.getElementById('cashDebtBusiness').value === '__new__' ? '' : document.getElementById('cashDebtBusiness').value;
@@ -2699,28 +2855,79 @@ function addCashDebt() {
       const counterparty = await resolvePendingCounterparty(rawCounterparty);
       const businessId = await resolvePendingBusiness(rawBusinessId);
 
-      const response = await fetch('/api/cash/debts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + localStorage.getItem('authToken')
-        },
-        body: JSON.stringify({
-          debt_type: debtType,
-          amount: Number(amount),
-          counterparty: counterparty || null,
-          due_date: dueDate || null,
-          business_id: businessId || null,
-          note
-        })
-      });
-      const data = await response.json();
-      if (!data.success) throw new Error(data.error || 'Ошибка сохранения');
+      // Ищем существующий долг с таким контрагентом и типом
+      const existingDebt = cashDebts.find(d => 
+        d.counterparty === counterparty && 
+        d.debt_type === debtType && 
+        d.status !== 'closed'
+      );
+
+      const operationAmount = Number(amount);
+      
+      if (existingDebt) {
+        // Обновляем существующий долг
+        let newAmount = Number(existingDebt.amount);
+        
+        if (operationType === 'increase') {
+          // Наращивание - увеличиваем сумму
+          newAmount += operationAmount;
+        } else {
+          // Погашение - уменьшаем сумму
+          newAmount -= operationAmount;
+        }
+
+        // Если долг полностью погашен или ушёл в минус
+        const newStatus = newAmount <= 0 ? 'closed' : 'open';
+        newAmount = Math.max(0, newAmount);
+
+        const response = await fetch('/api/cash/debts/' + existingDebt.id, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+          },
+          body: JSON.stringify({
+            amount: newAmount,
+            status: newStatus,
+            due_date: dueDate || existingDebt.due_date,
+            note: note || existingDebt.note
+          })
+        });
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || 'Ошибка обновления');
+      } else {
+        // Создаём новый долг (только если операция - наращивание)
+        if (operationType === 'decrease') {
+          alert('❌ Нельзя погасить несуществующий долг. Сначала создайте долг через "Наращивание"');
+          return;
+        }
+
+        const response = await fetch('/api/cash/debts', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+          },
+          body: JSON.stringify({
+            debt_date: debtDate || null,
+            debt_type: debtType,
+            amount: operationAmount,
+            counterparty: counterparty || null,
+            due_date: dueDate || null,
+            business_id: businessId || null,
+            note
+          })
+        });
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || 'Ошибка сохранения');
+      }
 
       rememberCounterparty(counterparty);
+      document.getElementById('cashDebtDate').value = '';
       document.getElementById('cashDebtAmount').value = '';
       document.getElementById('cashDebtCounterparty').value = '';
       document.getElementById('cashDebtNote').value = '';
+      document.getElementById('cashDebtDueDate').value = '';
       loadCashDebts();
     } catch (err) {
       alert('❌ ' + err.message);
@@ -2765,6 +2972,13 @@ loadCounterparties();
 loadCashCategories();
 loadCashflowData();
 loadCashDebts();
+
+// Восстанавливаем активную вкладку
+const savedTab = localStorage.getItem('cashActiveTab') || 'transactions';
+switchCashTab(savedTab);
+if (savedTab === 'debts') {
+  switchDebtSubTab('summary');
+}
 </script>
 </body></html>`);
 });

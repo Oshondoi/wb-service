@@ -650,6 +650,7 @@ async function getCashSummary(accountId, dateFrom = null, dateTo = null) {
 
 async function createCashDebt(accountId, payload) {
   const {
+    debt_date = null,
     debt_type,
     amount,
     counterparty = null,
@@ -666,6 +667,7 @@ async function createCashDebt(accountId, payload) {
     .insert({
       account_id: accountId,
       business_id,
+      debt_date,
       debt_type,
       amount,
       counterparty,

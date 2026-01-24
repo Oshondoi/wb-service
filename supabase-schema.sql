@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS cash_debts (
   id BIGSERIAL PRIMARY KEY,
   account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   business_id BIGINT REFERENCES businesses(id) ON DELETE SET NULL,
+  debt_date TIMESTAMPTZ,
   debt_type TEXT NOT NULL, -- 'receivable' | 'payable'
   amount DECIMAL(12,2) NOT NULL,
   counterparty TEXT,
