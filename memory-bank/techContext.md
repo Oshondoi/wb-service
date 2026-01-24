@@ -2,17 +2,17 @@
 
 Stack:
 - Node.js (>=18), Express 5, axios, cors, express-session, cookie-parser
-- **better-sqlite3** for local SQLite database
+- **@supabase/supabase-js** for Supabase PostgreSQL
 - **crypto** (built-in) for password hashing
 
 Database:
-- SQLite file: `wb-service.db` (created automatically)
-- Module: `database.js` with CRUD operations for accounts & businesses
+- Supabase PostgreSQL (managed schema in `supabase-schema.sql`)
+- Module: `database.js` with async CRUD operations
 - Schema: accounts (users) → businesses (companies with WB API keys)
 - Foreign keys enabled with CASCADE DELETE
 
 Setup:
-- Single entry `index.js`, `npm start` runs server
+- Entry `index.js` loads `fin-report.js`, `npm start` runs server
 - Database auto-initialized on first run
 - Auto-migration from `wb-api-key.txt` if exists
 - Deployed to Vercel; public endpoints needed for Sheets

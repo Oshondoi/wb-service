@@ -407,7 +407,9 @@ async function syncAllBusinesses() {
     const { data: businesses, error } = await supabase
       .from('businesses')
       .select('id, company_name, wb_api_key')
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .not('wb_api_key', 'is', null)
+      .neq('wb_api_key', '');
     
     if (error) {
       console.error(`❌ Ошибка получения списка магазинов:`, error);

@@ -1,8 +1,8 @@
 # System Patterns
 
 Architecture:
-- Node.js + Express single-file server (`index.js`)
-- **SQLite database** (`database.js` module) for accounts & businesses
+- Node.js + Express main server file (`fin-report.js`) loaded by `index.js`
+- **Supabase PostgreSQL** (через `database.js` + `supabase-client.js`)
 - Database-driven authentication with password hashing
 - Multi-company support (one account → many businesses)
 - Session-based auth protects UI and rich endpoints
@@ -26,10 +26,9 @@ Design Patterns:
 - **Business ownership verification**: API checks that business belongs to current account
 
 Database Patterns:
-- `initializeDatabase()`: Creates schema if not exists
-- `migrateFromLegacyApiKey()`: One-time migration on first run
-- CRUD operations via prepared statements (SQL injection safe)
-- Foreign keys enabled with `PRAGMA foreign_keys = ON`
+- Supabase schema managed via `supabase-schema.sql`
+- CRUD operations via Supabase client (async/await)
+- CASCADE DELETE on accounts → businesses
 - Indexes on `account_id` and `is_active` for performance
 
 Critical Paths:
@@ -37,9 +36,16 @@ Critical Paths:
 - `/api/businesses`: GET/POST for listing and creating companies
 - `/api/businesses/:id`: PUT/DELETE for updating and removing companies
 - `/api/wb-finance`: GET financial data for specific business (via `businessId` param)
+- `/api/cash/transactions`: cashflow CRUD (income/expense)
+- `/api/cash/debts`: debts CRUD
 - `/wb-price-csv`: minimal, fast, public; returns `price,name`
 - `/wb-max`: rich JSON with seller info, stocks, rating, images (requires auth)
+- `/`: Cashflow (ДДС) main page
 - `/fin-report`: Financial dashboard with business selector and management UI
+
+Cashflow UX Patterns:
+- В ДДС «Создать новый…» сначала сохраняет в памяти, запись в БД — только после «Добавить»
+- Перед сохранением операции/долга показывается модалка подтверждения
 
 Multi-Company Reporting Patterns:
 - **Sales Report**: Aggregates data by `nmId + brand + company_name` when "All active companies" selected

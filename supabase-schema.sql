@@ -17,12 +17,15 @@ CREATE TABLE IF NOT EXISTS businesses (
   id BIGSERIAL PRIMARY KEY,
   account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   company_name TEXT NOT NULL,
-  wb_api_key TEXT NOT NULL,
+  wb_api_key TEXT,
   description TEXT,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Миграция (если таблица уже создана):
+-- ALTER TABLE businesses ALTER COLUMN wb_api_key DROP NOT NULL;
 
 -- 3. Таблица себестоимости товаров
 CREATE TABLE IF NOT EXISTS product_costs (
@@ -36,6 +39,58 @@ CREATE TABLE IF NOT EXISTS product_costs (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(business_id, nm_id)
+);
+
+-- 3.1 Таблица движения денег (ДДС)
+CREATE TABLE IF NOT EXISTS cash_transactions (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  business_id BIGINT REFERENCES businesses(id) ON DELETE SET NULL,
+  tx_type TEXT NOT NULL, -- 'income' | 'expense'
+  amount DECIMAL(12,2) NOT NULL,
+  tx_date TIMESTAMPTZ NOT NULL,
+  category TEXT,
+  counterparty TEXT,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.2 Таблица долгов
+CREATE TABLE IF NOT EXISTS cash_debts (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  business_id BIGINT REFERENCES businesses(id) ON DELETE SET NULL,
+  debt_type TEXT NOT NULL, -- 'receivable' | 'payable'
+  amount DECIMAL(12,2) NOT NULL,
+  counterparty TEXT,
+  due_date TIMESTAMPTZ,
+  status TEXT DEFAULT 'open', -- 'open' | 'closed'
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3.4 Таблица категорий ДДС (привязка к аккаунту)
+CREATE TABLE IF NOT EXISTS cash_categories (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  name_normalized TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(account_id, name_normalized)
+);
+
+-- 3.3 Таблица контрагентов (привязка к аккаунту)
+CREATE TABLE IF NOT EXISTS counterparties (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  name_normalized TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(account_id, name_normalized)
 );
 
 -- 4. Таблица продаж WB
@@ -207,6 +262,14 @@ CREATE INDEX IF NOT EXISTS idx_businesses_is_active ON businesses(is_active);
 CREATE INDEX IF NOT EXISTS idx_product_costs_business_id ON product_costs(business_id);
 CREATE INDEX IF NOT EXISTS idx_product_costs_nm_id ON product_costs(nm_id);
 
+CREATE INDEX IF NOT EXISTS idx_cash_transactions_account_id ON cash_transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_cash_transactions_business_id ON cash_transactions(business_id);
+CREATE INDEX IF NOT EXISTS idx_cash_transactions_date ON cash_transactions(tx_date);
+
+CREATE INDEX IF NOT EXISTS idx_cash_debts_account_id ON cash_debts(account_id);
+CREATE INDEX IF NOT EXISTS idx_cash_debts_business_id ON cash_debts(business_id);
+CREATE INDEX IF NOT EXISTS idx_cash_debts_status ON cash_debts(status);
+
 CREATE INDEX IF NOT EXISTS idx_wb_sales_business_id ON wb_sales(business_id);
 CREATE INDEX IF NOT EXISTS idx_wb_sales_nm_id ON wb_sales(nm_id);
 CREATE INDEX IF NOT EXISTS idx_wb_sales_sale_dt ON wb_sales(sale_dt);
@@ -243,6 +306,12 @@ CREATE TRIGGER update_businesses_updated_at BEFORE UPDATE ON businesses
 
 CREATE TRIGGER update_product_costs_updated_at BEFORE UPDATE ON product_costs
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_cash_transactions_updated_at BEFORE UPDATE ON cash_transactions
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_cash_debts_updated_at BEFORE UPDATE ON cash_debts
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Row Level Security (RLS) - опционально, можно включить позже
 -- ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;

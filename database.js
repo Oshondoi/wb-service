@@ -133,12 +133,13 @@ async function updateAccountPassword(accountId, newPassword) {
  * Создание новой компании
  */
 async function createBusiness(accountId, companyName, wbApiKey, description = null) {
+  const apiKey = wbApiKey && String(wbApiKey).trim() ? String(wbApiKey).trim() : null;
   const { data, error } = await supabase
     .from('businesses')
     .insert({
       account_id: accountId,
       company_name: companyName,
-      wb_api_key: wbApiKey,
+      wb_api_key: apiKey,
       description,
       is_active: true // 🔥 Новые магазины создаются сразу активными
     })
@@ -159,7 +160,7 @@ async function createBusiness(accountId, companyName, wbApiKey, description = nu
 /**
  * Получение всех компаний аккаунта
  */
-async function getBusinessesByAccount(accountId, activeOnly = false) {
+async function getBusinessesByAccount(accountId, activeOnly = false, onlyWithApi = false) {
   let query = supabase
     .from('businesses')
     .select('*')
@@ -167,6 +168,10 @@ async function getBusinessesByAccount(accountId, activeOnly = false) {
   
   if (activeOnly) {
     query = query.eq('is_active', true);
+  }
+
+  if (onlyWithApi) {
+    query = query.not('wb_api_key', 'is', null).neq('wb_api_key', '');
   }
   
   query = query.order('created_at', { ascending: false });
@@ -248,6 +253,8 @@ async function getDefaultBusiness(accountId) {
     .select('*')
     .eq('account_id', accountId)
     .eq('is_active', true)
+    .not('wb_api_key', 'is', null)
+    .neq('wb_api_key', '')
     .order('created_at', { ascending: true })
     .limit(1)
     .single();
@@ -394,75 +401,458 @@ async function deleteProductCost(businessId, nmId) {
   return !error;
 }
 
+// ==================== КОНТРАГЕНТЫ ====================
+
+function normalizeCounterpartyName(name) {
+  if (!name) return null;
+  const normalized = String(name).trim().replace(/\s+/g, ' ');
+  return normalized.length ? normalized : null;
+}
+
+async function upsertCounterparty(accountId, name) {
+  const normalized = normalizeCounterpartyName(name);
+  if (!normalized) return null;
+
+  const payload = {
+    account_id: accountId,
+    name: normalized,
+    name_normalized: normalized.toLowerCase()
+  };
+
+  const { data, error } = await supabase
+    .from('counterparties')
+    .upsert(payload, { onConflict: 'account_id,name_normalized' })
+    .select()
+    .single();
+
+  if (error) {
+    const { data: existing, error: fetchError } = await supabase
+      .from('counterparties')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('name_normalized', payload.name_normalized)
+      .single();
+    if (fetchError) throw error;
+    return existing;
+  }
+
+  return data;
+}
+
+async function getCounterparties(accountId, search = null) {
+  let query = supabase
+    .from('counterparties')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('name', { ascending: true });
+
+  if (search) {
+    const normalized = normalizeCounterpartyName(search);
+    if (normalized) {
+      query = query.ilike('name', `%${normalized}%`);
+    }
+  }
+
+  const { data, error } = await query;
+  return error ? [] : data;
+}
+
+// ==================== КАТЕГОРИИ ДДС ====================
+
+function normalizeCashCategory(name) {
+  if (!name) return null;
+  const normalized = String(name).trim().replace(/\s+/g, ' ');
+  return normalized.length ? normalized : null;
+}
+
+async function upsertCashCategory(accountId, name) {
+  const normalized = normalizeCashCategory(name);
+  if (!normalized) return null;
+
+  const payload = {
+    account_id: accountId,
+    name: normalized,
+    name_normalized: normalized.toLowerCase()
+  };
+
+  const { data, error } = await supabase
+    .from('cash_categories')
+    .upsert(payload, { onConflict: 'account_id,name_normalized' })
+    .select()
+    .single();
+
+  if (error) {
+    const { data: existing, error: fetchError } = await supabase
+      .from('cash_categories')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('name_normalized', payload.name_normalized)
+      .single();
+    if (fetchError) throw error;
+    return existing;
+  }
+
+  return data;
+}
+
+async function getCashCategories(accountId, search = null) {
+  let query = supabase
+    .from('cash_categories')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('name', { ascending: true });
+
+  if (search) {
+    const normalized = normalizeCashCategory(search);
+    if (normalized) {
+      query = query.ilike('name', `%${normalized}%`);
+    }
+  }
+
+  const { data, error } = await query;
+  return error ? [] : data;
+}
+
+// ==================== ДВИЖЕНИЕ ДЕНЕГ (ДДС) ====================
+
+async function createCashTransaction(accountId, payload) {
+  const {
+    tx_type,
+    amount,
+    tx_date,
+    category = null,
+    counterparty = null,
+    note = null,
+    business_id = null
+  } = payload;
+
+  // Попытка создать контрагента и категорию (игнорируем ошибки если таблицы не существуют)
+  try {
+    await upsertCounterparty(accountId, counterparty);
+  } catch (err) {
+    console.log('Warning: Could not upsert counterparty:', err.message);
+  }
+  
+  try {
+    await upsertCashCategory(accountId, category);
+  } catch (err) {
+    console.log('Warning: Could not upsert cash category:', err.message);
+  }
+
+  const { data, error } = await supabase
+    .from('cash_transactions')
+    .insert({
+      account_id: accountId,
+      business_id,
+      tx_type,
+      amount,
+      tx_date,
+      category,
+      counterparty,
+      note
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getCashTransactions(accountId, dateFrom = null, dateTo = null, businessId = null, txType = null) {
+  let query = supabase
+    .from('cash_transactions')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('tx_date', { ascending: false });
+
+  if (dateFrom) {
+    query = query.gte('tx_date', dateFrom);
+  }
+
+  if (dateTo) {
+    query = query.lte('tx_date', dateTo);
+  }
+
+  if (businessId) {
+    query = query.eq('business_id', businessId);
+  }
+
+  if (txType) {
+    query = query.eq('tx_type', txType);
+  }
+
+  const { data, error } = await query;
+  return error ? [] : data;
+}
+
+async function updateCashTransaction(accountId, txId, updates) {
+  const allowedFields = ['tx_type', 'amount', 'tx_date', 'category', 'counterparty', 'note', 'business_id'];
+  const filteredUpdates = {};
+
+  for (const key of Object.keys(updates || {})) {
+    if (allowedFields.includes(key)) {
+      filteredUpdates[key] = updates[key];
+    }
+  }
+
+  if (Object.keys(filteredUpdates).length === 0) {
+    return false;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(filteredUpdates, 'counterparty')) {
+    await upsertCounterparty(accountId, filteredUpdates.counterparty);
+  }
+  if (Object.prototype.hasOwnProperty.call(filteredUpdates, 'category')) {
+    await upsertCashCategory(accountId, filteredUpdates.category);
+  }
+
+  const { error } = await supabase
+    .from('cash_transactions')
+    .update(filteredUpdates)
+    .eq('id', txId)
+    .eq('account_id', accountId);
+
+  return !error;
+}
+
+async function deleteCashTransaction(accountId, txId) {
+  const { error } = await supabase
+    .from('cash_transactions')
+    .delete()
+    .eq('id', txId)
+    .eq('account_id', accountId);
+
+  return !error;
+}
+
+async function getCashSummary(accountId, dateFrom = null, dateTo = null) {
+  const rows = await getCashTransactions(accountId, dateFrom, dateTo);
+  let income = 0;
+  let expense = 0;
+
+  rows.forEach(row => {
+    const amount = Number(row.amount || 0);
+    if (row.tx_type === 'income') {
+      income += amount;
+    } else if (row.tx_type === 'expense') {
+      expense += amount;
+    }
+  });
+
+  return {
+    income,
+    expense,
+    balance: income - expense
+  };
+}
+
+// ==================== ДОЛГИ ====================
+
+async function createCashDebt(accountId, payload) {
+  const {
+    debt_type,
+    amount,
+    counterparty = null,
+    due_date = null,
+    status = 'open',
+    note = null,
+    business_id = null
+  } = payload;
+
+  await upsertCounterparty(accountId, counterparty);
+
+  const { data, error } = await supabase
+    .from('cash_debts')
+    .insert({
+      account_id: accountId,
+      business_id,
+      debt_type,
+      amount,
+      counterparty,
+      due_date,
+      status,
+      note
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getCashDebts(accountId, status = null) {
+  let query = supabase
+    .from('cash_debts')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('due_date', { ascending: true });
+
+  if (status) {
+    query = query.eq('status', status);
+  }
+
+  const { data, error } = await query;
+  return error ? [] : data;
+}
+
+async function updateCashDebt(accountId, debtId, updates) {
+  const allowedFields = ['debt_type', 'amount', 'counterparty', 'due_date', 'status', 'note', 'business_id'];
+  const filteredUpdates = {};
+
+  for (const key of Object.keys(updates || {})) {
+    if (allowedFields.includes(key)) {
+      filteredUpdates[key] = updates[key];
+    }
+  }
+
+  if (Object.keys(filteredUpdates).length === 0) {
+    return false;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(filteredUpdates, 'counterparty')) {
+    await upsertCounterparty(accountId, filteredUpdates.counterparty);
+  }
+
+  const { error } = await supabase
+    .from('cash_debts')
+    .update(filteredUpdates)
+    .eq('id', debtId)
+    .eq('account_id', accountId);
+
+  return !error;
+}
+
+async function deleteCashDebt(accountId, debtId) {
+  const { error } = await supabase
+    .from('cash_debts')
+    .delete()
+    .eq('id', debtId)
+    .eq('account_id', accountId);
+
+  return !error;
+}
+
 // ==================== КЭШИРОВАННЫЕ ДАННЫЕ WB ====================
+
+async function fetchAllSupabase(buildQuery, pageSize = 1000) {
+  let allRows = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) {
+      console.error('Ошибка загрузки данных (pagination):', error);
+      return [];
+    }
+    allRows = allRows.concat(data || []);
+    if (!data || data.length < pageSize) {
+      break;
+    }
+    from += pageSize;
+  }
+  return allRows;
+}
 
 /**
  * Получить продажи из БД (кэш)
  */
 async function getSalesFromCache(businessId, dateFrom = null, dateTo = null) {
-  let query = supabase
-    .from('wb_sales')
-    .select('*')
-    .eq('business_id', businessId)
-    .order('sale_dt', { ascending: false });
+  const buildQuery = () => {
+    let query = supabase
+      .from('wb_sales')
+      .select('*')
+      .eq('business_id', businessId)
+      .order('sale_dt', { ascending: false });
+    
+    if (dateFrom) {
+      query = query.gte('sale_dt', dateFrom);
+    }
+    
+    if (dateTo) {
+      query = query.lte('sale_dt', dateTo);
+    }
+    
+    return query;
+  };
   
-  if (dateFrom) {
-    query = query.gte('sale_dt', dateFrom);
-  }
-  
-  if (dateTo) {
-    query = query.lte('sale_dt', dateTo);
-  }
-  
-  const { data, error } = await query;
-  
-  return error ? [] : data;
+  return await fetchAllSupabase(buildQuery);
 }
 
 /**
  * Получить заказы из БД (кэш)
  */
 async function getOrdersFromCache(businessId, dateFrom = null, dateTo = null) {
-  let query = supabase
-    .from('wb_orders')
-    .select('*')
-    .eq('business_id', businessId)
-    .order('order_dt', { ascending: false });
+  const buildQuery = () => {
+    let query = supabase
+      .from('wb_orders')
+      .select('*')
+      .eq('business_id', businessId)
+      .order('order_dt', { ascending: false });
+    
+    if (dateFrom) {
+      query = query.gte('order_dt', dateFrom);
+    }
+    
+    if (dateTo) {
+      query = query.lte('order_dt', dateTo);
+    }
+    
+    return query;
+  };
   
-  if (dateFrom) {
-    query = query.gte('order_dt', dateFrom);
-  }
-  
-  if (dateTo) {
-    query = query.lte('order_dt', dateTo);
-  }
-  
-  const { data, error } = await query;
-  
-  return error ? [] : data;
+  return await fetchAllSupabase(buildQuery);
 }
 
 /**
  * Получить финансовый отчёт из БД (кэш)
  */
 async function getFinancialReportFromCache(businessId, dateFrom = null, dateTo = null) {
-  let query = supabase
+  const buildQuery = () => {
+    let query = supabase
+      .from('wb_financial_reports')
+      .select('*')
+      .eq('business_id', businessId)
+      .order('rr_dt', { ascending: false });
+    
+    if (dateFrom) {
+      query = query.gte('rr_dt', dateFrom);
+    }
+    
+    if (dateTo) {
+      query = query.lte('rr_dt', dateTo);
+    }
+    
+    return query;
+  };
+  
+  return await fetchAllSupabase(buildQuery);
+}
+
+/**
+ * Получить минимальную и максимальную дату отчёта по бизнесу
+ */
+async function getFinancialReportRange(businessId) {
+  const { data: minRow, error: minError } = await supabase
     .from('wb_financial_reports')
-    .select('*')
+    .select('rr_dt')
     .eq('business_id', businessId)
-    .order('sale_dt', { ascending: false });
-  
-  if (dateFrom) {
-    query = query.gte('sale_dt', dateFrom);
+    .order('rr_dt', { ascending: true })
+    .limit(1);
+
+  const { data: maxRow, error: maxError } = await supabase
+    .from('wb_financial_reports')
+    .select('rr_dt')
+    .eq('business_id', businessId)
+    .order('rr_dt', { ascending: false })
+    .limit(1);
+
+  if (minError || maxError) {
+    return { minDate: null, maxDate: null };
   }
-  
-  if (dateTo) {
-    query = query.lte('sale_dt', dateTo);
-  }
-  
-  const { data, error } = await query;
-  
-  return error ? [] : data;
+
+  return {
+    minDate: minRow && minRow[0] ? minRow[0].rr_dt : null,
+    maxDate: maxRow && maxRow[0] ? maxRow[0].rr_dt : null
+  };
 }
 
 /**
@@ -541,10 +931,27 @@ module.exports = {
   getProductCostsByBusiness,
   getProductCost,
   deleteProductCost,
+  // Контрагенты
+  upsertCounterparty,
+  getCounterparties,
+  upsertCashCategory,
+  getCashCategories,
+  // ДДС
+  createCashTransaction,
+  getCashTransactions,
+  updateCashTransaction,
+  deleteCashTransaction,
+  getCashSummary,
+  // Долги
+  createCashDebt,
+  getCashDebts,
+  updateCashDebt,
+  deleteCashDebt,
   // Кэш WB данных
   getSalesFromCache,
   getOrdersFromCache,
   getFinancialReportFromCache,
+  getFinancialReportRange,
   getLastSync,
   // Утилиты
   checkIfDataExists

@@ -12,13 +12,14 @@ Problems Solved:
 - Quick internal lookup of extended data behind simple auth
 
 How It Should Work:
-- User logs in to main page with financial dashboard (`/`)
-- Financial Report module integrates with WB API to automatically track sales and calculate net profit
+- User logs in to main page with cashflow dashboard (`/`)
+- Cashflow module tracks доходы/расходы, долги и баланс
+- Financial Report available at `/fin-report` for per-company reporting
 - Product analysis available at `/products` for detailed product research
 - Sheets call `/wb-price-csv?nm=...` and parse two-line CSV: headers and a single data row
 
 UX Goals:
-- **Main page**: Clear financial dashboard with profit visualization, cost breakdowns, and export capabilities
+- **Main page**: Clear cashflow dashboard with income/expense tracking and balance
 - **Products page**: Central, readable table with clear badges for warehouses and statuses
 - Photo with graceful degradation (webp→jpg→basket→wbstatic) or placeholder
 - Simple login page; minimal friction for public CSV use
