@@ -648,6 +648,70 @@ async function getCashSummary(accountId, dateFrom = null, dateTo = null) {
 
 // ==================== ДОЛГИ ====================
 
+async function findOpenDebtGroup(accountId, counterparty, debtType, businessId = null) {
+  // Находим группу долгов с этим контрагентом, которая ещё не закрыта
+  // Группа считается закрытой, если сумма всех операций = 0
+  
+  const { data, error } = await supabase
+    .from('cash_debts')
+    .select('debt_group_id, sum(amount)')
+    .eq('account_id', accountId)
+    .eq('debt_type', debtType)
+    .eq('counterparty', counterparty);
+
+  if (businessId) {
+    const query = await supabase
+      .from('cash_debts')
+      .select('debt_group_id, amount')
+      .eq('account_id', accountId)
+      .eq('debt_type', debtType)
+      .eq('counterparty', counterparty)
+      .eq('business_id', businessId);
+    
+    // Группируем по debt_group_id и считаем сумму
+    const groups = {};
+    (query.data || []).forEach(row => {
+      if (!groups[row.debt_group_id]) {
+        groups[row.debt_group_id] = 0;
+      }
+      groups[row.debt_group_id] += Number(row.amount || 0);
+    });
+
+    // Ищем первую незакрытую группу (сумма != 0)
+    for (const [groupId, total] of Object.entries(groups)) {
+      if (Math.abs(total) > 0.01) { // Небольшая погрешность для float
+        return { debt_group_id: groupId };
+      }
+    }
+  } else {
+    const { data: allDebts } = await supabase
+      .from('cash_debts')
+      .select('debt_group_id, amount')
+      .eq('account_id', accountId)
+      .eq('debt_type', debtType)
+      .eq('counterparty', counterparty)
+      .is('business_id', null);
+    
+    // Группируем по debt_group_id и считаем сумму
+    const groups = {};
+    (allDebts || []).forEach(row => {
+      if (!groups[row.debt_group_id]) {
+        groups[row.debt_group_id] = 0;
+      }
+      groups[row.debt_group_id] += Number(row.amount || 0);
+    });
+
+    // Ищем первую незакрытую группу (сумма != 0)
+    for (const [groupId, total] of Object.entries(groups)) {
+      if (Math.abs(total) > 0.01) { // Небольшая погрешность для float
+        return { debt_group_id: groupId };
+      }
+    }
+  }
+
+  return null; // Нет открытых групп - создастся новая
+}
+
 async function createCashDebt(accountId, payload) {
   const {
     debt_date = null,
@@ -657,7 +721,9 @@ async function createCashDebt(accountId, payload) {
     due_date = null,
     status = 'open',
     note = null,
-    business_id = null
+    business_id = null,
+    operation_type = 'increase',
+    debt_group_id = null
   } = payload;
 
   await upsertCounterparty(accountId, counterparty);
@@ -673,7 +739,9 @@ async function createCashDebt(accountId, payload) {
       counterparty,
       due_date,
       status,
-      note
+      note,
+      operation_type,
+      debt_group_id
     })
     .select()
     .single();
@@ -945,6 +1013,7 @@ module.exports = {
   deleteCashTransaction,
   getCashSummary,
   // Долги
+  findOpenDebtGroup,
   createCashDebt,
   getCashDebts,
   updateCashDebt,

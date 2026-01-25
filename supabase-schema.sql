@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS cash_debts (
   due_date TIMESTAMPTZ,
   status TEXT DEFAULT 'open', -- 'open' | 'closed'
   note TEXT,
+  operation_type TEXT DEFAULT 'increase', -- 'increase' | 'decrease'
+  debt_group_id UUID DEFAULT gen_random_uuid(), -- Группа операций одного долга
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
