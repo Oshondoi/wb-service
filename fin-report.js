@@ -1079,7 +1079,14 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .cash-table td{padding:10px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
 .cash-table tbody tr{transition:all 0.15s}
 .cash-table tbody tr:hover{background:rgba(56,189,248,0.08)}
-.product-img{width:70px;height:70px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,163,184,0.25);box-shadow:0 6px 16px rgba(0,0,0,0.25)}
+.product-img{width:70px;height:70px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,163,184,0.25);box-shadow:0 6px 16px rgba(0,0,0,0.25);background:#0b1220}
+.photo-cell{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:70px;min-height:70px}
+.photo-placeholder{display:none;width:70px;height:70px;border-radius:10px;border:1px dashed rgba(148,163,184,0.3);display:flex;align-items:center;justify-content:center;font-size:10px;color:#94a3b8;background:rgba(15,23,42,0.6)}
+.photo-cell.no-photo .product-img{display:none}
+.photo-cell.no-photo .photo-placeholder{display:flex}
+.photo-preview{display:none;position:absolute;left:calc(100% + 12px);top:50%;transform:translateY(-50%);padding:8px;background:#0f172a;border:1px solid rgba(148,163,184,0.2);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,0.45);z-index:50}
+.photo-preview img{width:220px;height:220px;object-fit:cover;border-radius:12px;border:1px solid rgba(148,163,184,0.25)}
+.photo-cell.has-photo:hover .photo-preview{display:block}
 .status-ok{color:#86efac;font-weight:800}
 .status-error{color:#fca5a5;font-weight:800}
 .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:10px;font-weight:800;margin:2px;letter-spacing:0.3px;text-transform:uppercase}
@@ -1249,6 +1256,22 @@ window.addEventListener('DOMContentLoaded', function(){
     if(tb) tb.innerHTML='';
   };
 
+  window.handleImageLoad = function(img){
+    var wrap = img.closest('.photo-cell');
+    if (wrap) {
+      wrap.classList.remove('no-photo');
+      wrap.classList.add('has-photo');
+    }
+  };
+
+  window.handleImageError = function(img){
+    var wrap = img.closest('.photo-cell');
+    if (wrap) {
+      wrap.classList.remove('has-photo');
+      wrap.classList.add('no-photo');
+    }
+  };
+
   function addRow(data){
     var tb=document.querySelector('#dataTable tbody');
     if(!tb) return;
@@ -1361,17 +1384,13 @@ window.addEventListener('DOMContentLoaded', function(){
     else if(currency === 'KZT') currencyName = 'казахстанский тенге';
     currency = currency + (currencyName ? ' (' + currencyName + ')' : '');
     
-    var mainImage = '-';
+    var mainImage = '<div class="photo-cell no-photo"><div class="photo-placeholder">Нет фото</div></div>';
     if(data.mainImage){
-      var imgHtml = '<img src="'+data.mainImage+'" class="product-img" alt="Фото" crossorigin="anonymous" onerror="';
-      imgHtml += 'var alt=[';
-      imgHtml += 'this.src.replace(\\'.webp\\',\\'.jpg\\'),';
-      imgHtml += 'this.src.replace(\\'basket-\\'+this.src.match(/basket-(\\\\d+)/)[1],\\'basket-01\\'),';
-      imgHtml += '\\'https://images.wbstatic.net/big/new/\\'+this.src.match(/(\\\\d+)\\\\/part/)[1]+\\'0000/\\'+this.src.match(/part\\\\/(\\\\d+)/)[1]+\\'-1.jpg\\'';
-      imgHtml += '];';
-      imgHtml += 'if(!this.tried)this.tried=0;';
-      imgHtml += 'this.tried++;';
-      imgHtml += 'if(this.tried<alt.length){this.src=alt[this.tried-1];}else{this.style.display=\\'none\\';this.parentElement.innerHTML=\\'<div style=\\\"width:80px;height:80px;background:#eee;display:flex;align-items:center;justify-content:center;border-radius:6px;color:#999;font-size:11px\\\">\u041d\u0435\u0442 \u0444\u043e\u0442\u043e</div>\\';}" />';
+      var imgHtml = '<div class="photo-cell">' +
+        '<img src="'+data.mainImage+'" class="product-img" alt="Фото" crossorigin="anonymous" onload="handleImageLoad(this)" onerror="handleImageError(this)" />' +
+        '<div class="photo-preview"><img src="'+data.mainImage+'" alt="Фото" onload="handleImageLoad(this)" onerror="handleImageError(this)" /></div>' +
+        '<div class="photo-placeholder">Нет фото</div>' +
+      '</div>';
       mainImage = imgHtml;
     }
     
@@ -7055,6 +7074,7 @@ app.get('/wb-price', requireAuth, async (req, res) => {
 });
 
 // Прокси для изображений WB (обходим блокировку CDN)
+const IMG_HOST_CACHE = new Map();
 app.get('/wb-image', async (req, res) => {
   const nm = req.query.nm;
   const pic = req.query.pic || 1;
@@ -7062,16 +7082,50 @@ app.get('/wb-image', async (req, res) => {
 
   const vol = Math.floor(nm / 100000);
   const part = Math.floor(nm / 1000);
+  const cacheKey = String(vol);
+  const hostCandidates = [];
+  const cachedHost = IMG_HOST_CACHE.get(cacheKey);
+  if (cachedHost) hostCandidates.push(cachedHost);
+  for (let i = 1; i <= 40; i++) {
+    const host = String(i).padStart(2, '0');
+    if (!hostCandidates.includes(host)) hostCandidates.push(host);
+  }
   
-  // Пробуем разные CDN
-  const urls = [
-    `https://basket-${String((vol % 20) + 1).padStart(2, '0')}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.webp`,
-    `https://basket-01.wbbasket.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.jpg`,
-    `https://images.wbstatic.net/big/new/${vol}0000/${nm}-${pic}.jpg`,
-    `https://basket-${String((vol % 20) + 1).padStart(2, '0')}.wb.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.jpg`
-  ];
+  // Пробуем перебор basket-хостов
+  for (const host of hostCandidates) {
+    const urls = [
+      `https://basket-${host}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.webp`,
+      `https://basket-${host}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.jpg`
+    ];
+    for (const url of urls) {
+      try {
+        const response = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 6000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+          }
+        });
+        if (response.status >= 200 && response.status < 300) {
+          IMG_HOST_CACHE.set(cacheKey, host);
+          const contentType = response.headers['content-type'] || 'image/jpeg';
+          res.set('Content-Type', contentType);
+          res.set('Cache-Control', 'public, max-age=86400');
+          return res.send(response.data);
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+  }
 
-  for (const url of urls) {
+  // Фолбэки wbstatic и wb.ru
+  const fallbackUrls = [
+    `https://images.wbstatic.net/big/new/${vol}0000/${nm}-${pic}.jpg`,
+    `https://basket-01.wb.ru/vol${vol}/part${part}/${nm}/images/big/${pic}.jpg`
+  ];
+  for (const url of fallbackUrls) {
     try {
       const response = await axios.get(url, {
         responseType: 'arraybuffer',
@@ -7081,11 +7135,12 @@ app.get('/wb-image', async (req, res) => {
           'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
         }
       });
-      
-      const contentType = response.headers['content-type'] || 'image/jpeg';
-      res.set('Content-Type', contentType);
-      res.set('Cache-Control', 'public, max-age=86400'); // кэш на 24 часа
-      return res.send(response.data);
+      if (response.status >= 200 && response.status < 300) {
+        const contentType = response.headers['content-type'] || 'image/jpeg';
+        res.set('Content-Type', contentType);
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(response.data);
+      }
     } catch (e) {
       continue;
     }
@@ -7520,7 +7575,7 @@ app.get('/wb-max', requireAuth, async (req, res) => {
   const feedbacks = product.feedbacks || 0;
   const images = Array.isArray(product.pics) ? product.pics.length : (Array.isArray(product.images) ? product.images.length : 0);
 
-  // Главное фото товара - используем прямой URL с корректным форматом
+  // Главное фото товара - используем прокси, чтобы избежать блокировок CDN
   let mainImage = '';
   if (product.id || nm) {
     const productId = product.id || nm;
@@ -7532,9 +7587,8 @@ app.get('/wb-max', requireAuth, async (req, res) => {
     } else if (Array.isArray(product.colors) && product.colors.length > 0 && Array.isArray(product.colors[0].pics)) {
       picNum = product.colors[0].pics[0] || 1;
     }
-    // Генерируем прямые URL для разных CDN (браузер попробует сам)
-    const basketNum = String(1 + (vol % 20)).padStart(2, '0');
-    mainImage = `https://basket-${basketNum}.wbbasket.ru/vol${vol}/part${part}/${productId}/images/big/${picNum}.webp`;
+    // Проксируем изображение через наш сервер
+    mainImage = `/wb-image?nm=${productId}&pic=${picNum}`;
   }
 
   // Остатки и склады

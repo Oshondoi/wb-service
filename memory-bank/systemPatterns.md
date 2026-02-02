@@ -10,8 +10,10 @@ Architecture:
 
 Key Decisions:
 - Multi-source data pipeline: v2 → v1 → basket CDN → HTML
+- **WB card API switched to v4** (v2/v1 now unreliable)
 - Price extraction prioritizes smallest positive price across candidate fields
 - Image proxy endpoint `/wb-image` with cascade of CDN URLs
+- `/wb-image` now перебирает basket‑хосты (01–40) и кэширует найденный домен
 - **Database-first approach**: All users and API keys stored in SQLite
 - **CASCADE DELETE**: Removing account deletes all its businesses
 - **Auto-migration**: First run migrates old `wb-api-key.txt` to database
