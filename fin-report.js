@@ -498,6 +498,20 @@ app.put('/api/cash/transactions/:id', requireAuth, async (req, res) => {
   const updates = { ...req.body };
 
   if (updates.business_id) {
+
+app.delete('/api/cash/transactions/bulk', requireAuth, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(id => Number.isFinite(id)) : [];
+  if (!ids.length) {
+    return res.json({ success: false, error: 'Нет операций для удаления' });
+  }
+
+  try {
+    const deleted = await db.deleteCashTransactionsBulk(req.account.id, ids);
+    res.json({ success: true, deleted });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
     const isOwner = await db.verifyBusinessOwnership(parseInt(updates.business_id), req.account.id);
     if (!isOwner) {
       return res.json({ success: false, error: 'Доступ запрещён' });
@@ -571,11 +585,54 @@ app.post('/api/cash/debts', requireAuth, async (req, res) => {
   try {
     // Ищем открытую группу долга для этого контрагента + тип
     const openDebtGroup = await db.findOpenDebtGroup(req.account.id, counterparty, debt_type, business_id);
-    
+    const amountValue = Number(amount);
+
+    if (openDebtGroup && amountValue !== 0) {
+      const currentBalance = Number(openDebtGroup.balance || 0);
+      const newBalance = currentBalance + amountValue;
+
+      // Если операция переворачивает долг в противоположный (переплата/перебор)
+      if (currentBalance !== 0 && Math.sign(currentBalance) !== Math.sign(newBalance) && Math.abs(newBalance) > 0.01) {
+        const closeAmount = -currentBalance; // Закрываем текущий долг до нуля
+        const closeOperationType = closeAmount < 0 ? 'decrease' : 'increase';
+
+        const closeItem = await db.createCashDebt(req.account.id, {
+          debt_date: debt_date || null,
+          debt_type,
+          amount: closeAmount,
+          counterparty,
+          due_date: due_date || null,
+          status: status || 'open',
+          note,
+          business_id: business_id ? parseInt(business_id) : null,
+          operation_type: closeOperationType,
+          debt_group_id: openDebtGroup.debt_group_id
+        });
+
+        const oppositeDebtType = debt_type === 'receivable' ? 'payable' : 'receivable';
+        const newAmount = Math.abs(newBalance);
+
+        const newItem = await db.createCashDebt(req.account.id, {
+          debt_date: debt_date || null,
+          debt_type: oppositeDebtType,
+          amount: newAmount,
+          counterparty,
+          due_date: due_date || null,
+          status: 'open',
+          note,
+          business_id: business_id ? parseInt(business_id) : null,
+          operation_type: 'increase',
+          debt_group_id: null
+        });
+
+        return res.json({ success: true, items: [closeItem, newItem], split: true });
+      }
+    }
+
     const item = await db.createCashDebt(req.account.id, {
       debt_date: debt_date || null,
       debt_type,
-      amount: Number(amount),
+      amount: amountValue,
       counterparty,
       due_date: due_date || null,
       status: status || 'open',
@@ -604,6 +661,20 @@ app.put('/api/cash/debts/:id', requireAuth, async (req, res) => {
   try {
     const success = await db.updateCashDebt(req.account.id, debtId, updates);
     res.json({ success });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/cash/debts/bulk', requireAuth, async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(id => Number.isFinite(id)) : [];
+  if (!ids.length) {
+    return res.json({ success: false, error: 'Нет записей для удаления' });
+  }
+
+  try {
+    const deleted = await db.deleteCashDebtsBulk(req.account.id, ids);
+    res.json({ success: true, deleted });
   } catch (error) {
     res.json({ success: false, error: error.message });
   }
@@ -978,31 +1049,37 @@ app.get('/products', requireAuth, (req, res) => {
 <title>WB Helper MAX - Анализ товаров</title>
 <style>
 *{box-sizing:border-box}
+.container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-h1{margin:0 0 16px;font-size:26px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
-.container{width:100%;max-width:100%;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
-.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:16px}
-.field{display:flex;flex-direction:column}
-label{font-weight:700;margin-bottom:8px;font-size:11px;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase}
-input,select{padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:13px;transition:all 0.2s;background:rgba(15,23,42,0.8);color:#e2e8f0}
-input:focus,select:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
-.buttons{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
-button{padding:10px 16px;border:none;background:transparent;color:#e2e8f0;border-radius:10px;font-size:12px;cursor:pointer;font-weight:800;transition:all 0.2s;border:1px solid rgba(148,163,184,0.35);letter-spacing:0.4px;text-transform:uppercase}
-button:hover{transform:translateY(-2px);border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
-button.secondary{background:#38bdf8;color:#0b1220;border:none;box-shadow:0 12px 26px rgba(56,189,248,0.35)}
-button.secondary:hover{box-shadow:0 18px 34px rgba(56,189,248,0.45)}
-button.danger{background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.35)}
-button.success{background:#22c55e;color:#0b1220;border:none;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
-.info-box{background:rgba(15,23,42,0.75);padding:14px 16px;border-radius:12px;margin:16px 0;border:1px solid rgba(148,163,184,0.18)}
-.info-box strong{color:#93c5fd;font-size:13px;display:block;margin-bottom:6px}
-.info-box p{margin:6px 0;color:#cbd5f5;line-height:1.6;font-size:12px}
-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:16px;background:transparent}
-th,td{border:1px solid rgba(148,163,184,0.2);padding:10px 12px;text-align:left}
-th{background:#0f172a;color:#e2e8f0;font-weight:800;position:sticky;top:0;font-size:10px;letter-spacing:0.4px;text-transform:uppercase}
-tbody tr{transition:all 0.15s}
-tbody tr:hover{background:rgba(56,189,248,0.08)}
+.header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
+.brand-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:14px}
+.brand-title{font-size:13px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase}
+.brand-subtitle{font-size:11px;color:#94a3b8;letter-spacing:0.4px;text-transform:uppercase}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.api-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:transparent;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:all 0.2s;letter-spacing:0.4px;text-transform:uppercase}
+.api-btn:hover{transform:translateY(-2px);border-color:#38bdf8;color:#fff;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
+.api-btn.primary{background:rgba(34,197,94,0.18);border-color:rgba(34,197,94,0.7);color:#86efac;box-shadow:0 8px 18px rgba(34,197,94,0.22)}
+.api-btn.primary:hover{border-color:#22c55e;color:#eafff3;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
+.api-btn.secondary{background:rgba(56,189,248,0.15);border-color:rgba(56,189,248,0.65);color:#bae6fd;box-shadow:0 8px 18px rgba(56,189,248,0.22)}
+.api-btn.secondary:hover{border-color:#38bdf8;color:#e2f2ff;box-shadow:0 12px 26px rgba(56,189,248,0.35)}
+.api-btn.danger{background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.55);color:#fca5a5;box-shadow:0 8px 18px rgba(239,68,68,0.2)}
+.api-btn.danger:hover{border-color:#ef4444;color:#fee2e2;box-shadow:0 12px 26px rgba(239,68,68,0.35)}
+.section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:16px 18px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:16px}
+.section-title{margin:0 0 12px;font-size:14px;font-weight:700;color:#f8fafc;letter-spacing:0.3px}
+.section-note{color:#cbd5f5;font-size:12px;line-height:1.6;margin:0}
+.cash-form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.cash-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px}
+.cash-input{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
+.cash-input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
+.actions-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.table-wrapper{overflow-x:auto;border-radius:14px;border:1px solid rgba(148,163,184,0.18);box-shadow:0 14px 30px rgba(0,0,0,0.35)}
+.cash-table{width:100%;border-collapse:collapse}
+.cash-table th{background:#0b1220;color:#e2e8f0;font-size:11px;text-align:left;padding:10px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:10;letter-spacing:0.4px;text-transform:uppercase}
+.cash-table td{padding:10px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.cash-table tbody tr{transition:all 0.15s}
+.cash-table tbody tr:hover{background:rgba(56,189,248,0.08)}
 .product-img{width:70px;height:70px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,163,184,0.25);box-shadow:0 6px 16px rgba(0,0,0,0.25)}
-.table-wrapper{overflow-x:auto;margin-top:16px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);box-shadow:0 14px 30px rgba(0,0,0,0.35)}
 .status-ok{color:#86efac;font-weight:800}
 .status-error{color:#fca5a5;font-weight:800}
 .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:10px;font-weight:800;margin:2px;letter-spacing:0.3px;text-transform:uppercase}
@@ -1011,44 +1088,60 @@ tbody tr:hover{background:rgba(56,189,248,0.08)}
 .badge-warning{background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid rgba(245,158,11,0.35)}
 </style></head><body>
 <div class="container">
-<h1>🚀 WB Helper MAX</h1>
-<div class="info-box">
-  <strong>Максимальная версия:</strong> Получайте все доступные данные о товаре — цену, остатки, рейтинг, отзывы, изображения, склады и информацию о пункте выдачи (dest).
-</div>
-<div class="controls">
-  <div class="field">
-    <label for="nm">Артикул WB</label>
-    <input id="nm" type="text" placeholder="например 272673889" />
+<div class="header-bar">
+  <div class="brand">
+    <div class="brand-mark">WB</div>
+    <div>
+      <div class="brand-title">WB Helper MAX</div>
+      <div class="brand-subtitle">Анализ товаров</div>
+    </div>
   </div>
-  <div class="field">
-    <label for="domain">Домен</label>
-    <select id="domain">
-      <option value="ru">wildberries.ru (RUB)</option>
-      <option value="kg">wildberries.kg (KGS)</option>
-      <option value="kz">wildberries.kz (KZT)</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="dest">Пункт выдачи (dest)</label>
-    <select id="dest">
-      <option value="">Авто (перебор)</option>
-      <option value="-1257786">-1257786 (Москва)</option>
-      <option value="-1029256">-1029256 (СПб)</option>
-      <option value="-1059509">-1059509 (Казань)</option>
-      <option value="-59208">-59208 (Екатеринбург)</option>
-      <option value="-364763">-364763 (Новосибирск)</option>
-    </select>
+  <div class="toolbar">
+    <button class="api-btn" onclick="window.location.href='/'">📈 Главная</button>
+    <button class="api-btn secondary" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
   </div>
 </div>
-<div class="buttons">
-  <button id="fetch" class="success">📊 Получить данные</button>
-  <button id="open" class="secondary">🔗 Открыть товар</button>
-  <button id="clear" class="danger">🗑️ Очистить таблицу</button>
-  <button onclick="window.location.href='/'" style="background:#0984e3">📈 Главная</button>
-  <button onclick="localStorage.removeItem('authToken');window.location.href='/login'" style="background:#636e72">🚪 Выход</button>
+<div class="section">
+  <h2 class="section-title">Максимальная версия</h2>
+  <p class="section-note">Получайте все доступные данные о товаре — цену, остатки, рейтинг, отзывы, изображения, склады и информацию о пункте выдачи (dest).</p>
 </div>
-<div class="table-wrapper">
-  <table id="dataTable">
+<div class="section">
+  <h2 class="section-title">Параметры запроса</h2>
+  <div class="cash-form-row">
+    <div>
+      <label class="cash-label" for="nm">Артикул WB</label>
+      <input id="nm" class="cash-input" type="text" placeholder="например 272673889" />
+    </div>
+    <div>
+      <label class="cash-label" for="domain">Домен</label>
+      <select id="domain" class="cash-input">
+        <option value="ru">wildberries.ru (RUB)</option>
+        <option value="kg">wildberries.kg (KGS)</option>
+        <option value="kz">wildberries.kz (KZT)</option>
+      </select>
+    </div>
+    <div>
+      <label class="cash-label" for="dest">Пункт выдачи (dest)</label>
+      <select id="dest" class="cash-input">
+        <option value="">Авто (перебор)</option>
+        <option value="-1257786">-1257786 (Москва)</option>
+        <option value="-1029256">-1029256 (СПб)</option>
+        <option value="-1059509">-1059509 (Казань)</option>
+        <option value="-59208">-59208 (Екатеринбург)</option>
+        <option value="-364763">-364763 (Новосибирск)</option>
+      </select>
+    </div>
+  </div>
+  <div class="actions-row">
+    <button id="fetch" class="api-btn primary">📊 Получить данные</button>
+    <button id="open" class="api-btn secondary">🔗 Открыть товар</button>
+    <button id="clear" class="api-btn danger">🗑️ Очистить таблицу</button>
+  </div>
+</div>
+<div class="section">
+  <h2 class="section-title">Результаты</h2>
+  <div class="table-wrapper">
+    <table id="dataTable" class="cash-table">
     <thead><tr>
       <th>Артикул</th>
       <th>Фото товара</th>
@@ -1072,7 +1165,8 @@ tbody tr:hover{background:rgba(56,189,248,0.08)}
       <th>Статус</th>
     </tr></thead>
     <tbody></tbody>
-  </table>
+    </table>
+  </div>
 </div>
 </div>
 <script>
@@ -1251,7 +1345,8 @@ window.addEventListener('DOMContentLoaded', function(){
     var source = (data.source || '-');
     if(data.source){
       var srcName = '';
-      if(data.source.indexOf('v2') >= 0) srcName = 'API v2';
+      if(data.source.indexOf('v4') >= 0) srcName = 'API v4';
+      else if(data.source.indexOf('v2') >= 0) srcName = 'API v2';
       else if(data.source.indexOf('v1') >= 0) srcName = 'API v1';
       else if(data.source.indexOf('basket') >= 0) srcName = 'CDN корзины';
       else if(data.source.indexOf('html') >= 0) srcName = 'HTML страница';
@@ -1507,7 +1602,7 @@ async function fetchLegalEntityName(sellerId) {
   
   // МЕТОД 2: Пробуем card API (иногда там есть seller info)
   try {
-    const cardUrl = `https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm=${id}`;
+    const cardUrl = `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=-1257786&nm=${id}`;
     const resp = await axios.get(cardUrl, {
       headers: {
         'User-Agent': 'WildberriesApp/1.0',
@@ -1516,7 +1611,7 @@ async function fetchLegalEntityName(sellerId) {
       timeout: 8000
     });
     
-    const products = resp?.data?.data?.products || [];
+    const products = resp?.data?.products || resp?.data?.data?.products || [];
     if (products.length > 0 && products[0].supplierName) {
       const name = String(products[0].supplierName).trim();
       console.log(`✓ Получено из card API для ${id}: ${name}`);
@@ -1586,7 +1681,7 @@ app.get('/', requireAuth, (req, res) => {
 <style>
 *{box-sizing:border-box}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.container{width:100%;max-width:1300px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+.container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
 .brand-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:14px}
@@ -1595,6 +1690,40 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .api-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:transparent;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:all 0.2s;letter-spacing:0.4px;text-transform:uppercase}
 .api-btn:hover{transform:translateY(-2px);border-color:#38bdf8;color:#fff;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
+.api-btn.primary{background:rgba(34,197,94,0.18);border-color:rgba(34,197,94,0.7);color:#86efac;box-shadow:0 8px 18px rgba(34,197,94,0.22)}
+.api-btn.primary:hover{border-color:#22c55e;color:#eafff3;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
+.api-btn.secondary{background:rgba(56,189,248,0.15);border-color:rgba(56,189,248,0.65);color:#bae6fd;box-shadow:0 8px 18px rgba(56,189,248,0.22)}
+.api-btn.secondary:hover{border-color:#38bdf8;color:#e2f2ff;box-shadow:0 12px 26px rgba(56,189,248,0.35)}
+.api-btn.secondary{background:rgba(56,189,248,0.15);border-color:rgba(56,189,248,0.65);color:#bae6fd;box-shadow:0 8px 18px rgba(56,189,248,0.22)}
+.api-btn.secondary:hover{border-color:#38bdf8;color:#e2f2ff;box-shadow:0 12px 26px rgba(56,189,248,0.35)}
+.api-btn.create-op{white-space:nowrap;min-width:160px;justify-content:center}
+.filter-btn{appearance:none;-webkit-appearance:none;-moz-appearance:none;display:inline-flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(56,189,248,0.08);color:#c7d2fe;border:1px solid rgba(56,189,248,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:box-shadow 0.2s,border-color 0.2s,color 0.2s;background-color 0.2s;letter-spacing:0.4px;text-transform:uppercase;box-shadow:0 6px 14px rgba(56,189,248,0.15)}
+.filter-btn:hover{border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.25);background:rgba(56,189,248,0.14);color:#e2e8f0}
+.filter-btn:focus{outline:none;border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.25)}
+.filter-btn option{background:#0f172a;color:#e2e8f0}
+.filter-btn:disabled{opacity:0.6;cursor:not-allowed}
+.selected-count{min-width:14ch;display:inline-block}
+.filter-menu{position:relative;display:inline-flex}
+.filter-dropdown{position:absolute;top:calc(100% + 6px);left:0;min-width:190px;background:#0f172a;border:1px solid rgba(148,163,184,0.25);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,0.4);padding:6px;z-index:30;display:none}
+.filter-dropdown.open{display:block}
+.filter-item{padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#e2e8f0;cursor:pointer;transition:background 0.2s,color 0.2s}
+.filter-item:hover{background:rgba(56,189,248,0.15);color:#fff}
+.filter-item.active{background:rgba(34,197,94,0.18);color:#86efac}
+.filter-menu{position:relative;display:inline-flex}
+.filter-dropdown{position:absolute;top:calc(100% + 6px);left:0;min-width:190px;background:#0f172a;border:1px solid rgba(148,163,184,0.25);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,0.4);padding:6px;z-index:30;display:none}
+.filter-dropdown.open{display:block}
+.filter-item{padding:8px 10px;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#e2e8f0;cursor:pointer;transition:background 0.2s,color 0.2s}
+.filter-item:hover{background:rgba(56,189,248,0.15);color:#fff}
+.filter-item.active{background:rgba(34,197,94,0.18);color:#86efac}
+.selected-count{min-width:14ch;display:inline-block}
+.filter-btn{appearance:none;-webkit-appearance:none;-moz-appearance:none;display:inline-flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(56,189,248,0.08);color:#c7d2fe;border:1px solid rgba(56,189,248,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:box-shadow 0.2s,border-color 0.2s,color 0.2s;background-color 0.2s;letter-spacing:0.4px;text-transform:uppercase;box-shadow:0 6px 14px rgba(56,189,248,0.15)}
+.filter-btn:hover{border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.25);background:rgba(56,189,248,0.14);color:#e2e8f0}
+.filter-btn:focus{outline:none;border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.25)}
+.filter-btn option{background:#0f172a;color:#e2e8f0}
+.filter-btn:disabled{opacity:0.6;cursor:not-allowed}
+.api-btn.create-op{white-space:nowrap;min-width:160px;justify-content:center}
+.api-btn.primary{background:rgba(34,197,94,0.18);border-color:rgba(34,197,94,0.7);color:#86efac;box-shadow:0 8px 18px rgba(34,197,94,0.22)}
+.api-btn.primary:hover{border-color:#22c55e;color:#eafff3;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
 .section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:16px 18px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:16px}
 .cash-tabs{display:flex;gap:8px;margin-bottom:14px}
 .cash-tab-btn{padding:8px 14px;border-radius:10px;border:1px solid rgba(148,163,184,0.3);background:rgba(15,23,42,0.85);color:#e2e8f0;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:0.3px;text-transform:uppercase;transition:all 0.2s}
@@ -1607,6 +1736,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .stat-hint{font-size:11px;color:#94a3b8;margin-top:6px}
 .cash-form{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:14px;padding:14px;margin-bottom:14px}
 .cash-form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.cash-form-row.two-col{grid-template-columns:repeat(2,minmax(260px,1fr))}
 .cash-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px}
 .cash-input{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
 .cash-input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
@@ -1637,6 +1767,11 @@ input[type=number]{-moz-appearance:textfield}
 .modal-content{background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.2);border-radius:16px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,0.5);max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);overflow:auto;margin:0 auto}
 .modal-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding-bottom:12px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,0.2)}
 .modal-header h2{margin:0;font-size:18px;font-weight:700;color:#f8fafc}
+.modal-header.centered{justify-content:center;position:relative}
+.modal-header.centered .close-btn{position:absolute;right:0;top:0}
+.modal-footer{display:flex;justify-content:center;gap:12px;margin-top:16px;padding-top:12px;border-top:1px solid rgba(148,163,184,0.2)}
+.cash-modal .modal-content{max-width:1100px}
+.cash-modal .cash-form-row{grid-template-columns:repeat(2,minmax(260px,1fr))}
 .close-btn{background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);color:#e2e8f0;border-radius:10px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;transition:all 0.2s}
 .close-btn:hover{border-color:#38bdf8;color:#fff}
 </style>
@@ -1658,23 +1793,18 @@ input[type=number]{-moz-appearance:textfield}
       </div>
     </div>
     <div class="toolbar">
-      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between">
       <button id="cashDateRangeBtn" onclick="openCashDateRangePicker()" class="range-btn">
         <span style="font-size:16px">📅</span>
         <span>Период:</span>
         <span id="cashDateRangeDisplay" class="range-value">—</span>
       </button>
-      <input type="date" id="cashDateFrom" style="display:none" />
-      <input type="date" id="cashDateTo" style="display:none" />
+      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
     </div>
   </div>
 
-  <!-- Балансы вынесены отдельно -->
+  <input type="date" id="cashDateFrom" style="display:none" />
+  <input type="date" id="cashDateTo" style="display:none" />
+
   <div class="section">
     <div class="cash-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
       <div class="stat-card" style="--accent:#38bdf8">
@@ -1706,8 +1836,169 @@ input[type=number]{-moz-appearance:textfield}
   </div>
 
   <div id="cashflowTransactionsTab">
+    <div class="cash-sub-tabs" style="margin-top:8px">
+      <button class="cash-sub-tab cash-tx-sub-tab active" onclick="switchCashTxSubTab('all')">Все</button>
+      <button class="cash-sub-tab cash-tx-sub-tab" onclick="switchCashTxSubTab('income')">Приходы</button>
+      <button class="cash-sub-tab cash-tx-sub-tab" onclick="switchCashTxSubTab('expense')">Расходы</button>
+    </div>
 
-    <div class="cash-form">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="cash-muted selected-count" style="font-size:12px">Выбрано: <span id="cashTxSelectedCount">0</span></div>
+        <button class="api-btn primary create-op" style="padding:6px 10px" onclick="openCashTransactionModal()">Создать операцию</button>
+      </div>
+      <button id="cashTxBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedCashTransactions()" disabled>Удалить выбранные</button>
+    </div>
+    <div style="max-height:50vh;overflow:auto">
+      <table class="cash-table">
+        <thead>
+          <tr>
+            <th style="width:32px;text-align:center"><input type="checkbox" id="cashTxSelectAll" onclick="toggleAllCashTxCheckboxes(this)" /></th>
+            <th>Дата операции</th>
+            <th>Тип</th>
+            <th>Сумма</th>
+            <th>Категория</th>
+            <th>Магазин</th>
+            <th>Контрагент</th>
+            <th>Комментарий</th>
+            <th>Создана</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="cashTransactionsBody">
+          <tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="cashflowDebtsTab" style="display:none">
+    <!-- Подвкладки -->
+    <div class="cash-sub-tabs">
+      <button class="cash-sub-tab cash-debt-sub-tab active" onclick="switchDebtSubTab('summary')">Список долгов</button>
+      <button class="cash-sub-tab cash-debt-sub-tab" onclick="switchDebtSubTab('operations')">Записи</button>
+    </div>
+
+    <!-- Вкладка: Сводка долгов -->
+    <div id="debtSummaryTab" style="display:block">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="cash-muted selected-count" style="font-size:12px">Выбрано: <span id="debtSummarySelectedCount">0</span></div>
+          <button class="api-btn primary create-op" style="padding:6px 10px" onclick="openCashDebtModal()">Создать операцию</button>
+        </div>
+        <button id="debtSummaryBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedDebtSummaries()" disabled>Удалить выбранные</button>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th style="width:32px;text-align:center"><input type="checkbox" id="debtSummarySelectAll" onclick="toggleAllDebtSummaryCheckboxes(this)" /></th>
+              <th>Контрагент</th>
+              <th>Тип</th>
+              <th style="min-width:80px;text-align:center">Прогресс</th>
+              <th>Всего</th>
+              <th>Оплачено</th>
+              <th>Остаток</th>
+              <th>Статус</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="debtSummaryBody">
+            <tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Вкладка: Записи долгов -->
+    <div id="debtOperationsTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="cash-muted selected-count" style="font-size:12px">Выбрано: <span id="cashDebtSelectedCount">0</span></div>
+          <button class="api-btn primary create-op" style="padding:6px 10px" onclick="openCashDebtModal()">Создать операцию</button>
+          <div class="filter-menu">
+            <button id="cashDebtOperationFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtOperationMenu(event)">Все операции</button>
+            <div id="cashDebtOperationMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all" onclick="setDebtOperationFilter('all')">Все операции</div>
+              <div class="filter-item" data-value="increase" onclick="setDebtOperationFilter('increase')">Начисления</div>
+              <div class="filter-item" data-value="decrease" onclick="setDebtOperationFilter('decrease')">Погашения</div>
+            </div>
+          </div>
+          <div class="filter-menu">
+            <button id="cashDebtTypeFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtTypeMenu(event)">Все типы</button>
+            <div id="cashDebtTypeMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all" onclick="setDebtTypeFilter('all')">Все типы</div>
+              <div class="filter-item" data-value="receivable" onclick="setDebtTypeFilter('receivable')">Нам должны</div>
+              <div class="filter-item" data-value="payable" onclick="setDebtTypeFilter('payable')">Мы должны</div>
+            </div>
+          </div>
+        </div>
+        <button id="cashDebtBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedCashDebts()" disabled>Удалить выбранные</button>
+      </div>
+      <div style="max-height:50vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th style="width:32px;text-align:center"><input type="checkbox" id="cashDebtSelectAll" onclick="toggleAllDebtCheckboxes(this)" /></th>
+              <th>Дата операции</th>
+              <th>Тип</th>
+              <th>Операция</th>
+              <th>Сумма</th>
+              <th>Контрагент</th>
+              <th>Срок</th>
+              <th>Магазин</th>
+              <th>Комментарий</th>
+              <th style="text-align:right">Действия</th>
+            </tr>
+          </thead>
+          <tbody id="cashDebtsBody">
+            <tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка: операции долга -->
+<div id="debtOperationsModal" class="modal" onclick="closeDebtOperationsModal()">
+  <div class="modal-content" style="max-width:1000px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2 id="debtOperationsModalTitle">Операции долга</h2>
+      <button class="close-btn" onclick="closeDebtOperationsModal()">&times;</button>
+    </div>
+    <div style="padding:16px">
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Дата операции</th>
+              <th>Тип</th>
+              <th>Операция</th>
+              <th>Сумма</th>
+              <th>Контрагент</th>
+              <th>Срок</th>
+              <th>Магазин</th>
+              <th>Комментарий</th>
+            </tr>
+          </thead>
+          <tbody id="debtOperationsModalBody">
+            <tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка: создание операции движения -->
+<div id="cashTransactionModal" class="modal cash-modal" onclick="closeCashTransactionModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header centered">
+      <h2>➕ Новая операция</h2>
+      <button class="close-btn" onclick="closeCashTransactionModal()">&times;</button>
+    </div>
+    <div class="cash-form" style="margin-bottom:0">
       <div class="cash-form-row">
         <div>
           <div class="cash-label">Дата</div>
@@ -1740,37 +2031,22 @@ input[type=number]{-moz-appearance:textfield}
           <div class="cash-label">Комментарий</div>
           <input id="cashTxNote" type="text" class="cash-input" placeholder="Примечание" />
         </div>
-        <div style="display:flex;align-items:flex-end">
-          <button class="cash-action-btn" onclick="addCashTransaction()">Добавить</button>
-        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="cash-action-btn" onclick="addCashTransaction()">Создать</button>
       </div>
     </div>
-
-    <div style="max-height:50vh;overflow:auto">
-      <table class="cash-table">
-        <thead>
-          <tr>
-            <th>Дата операции</th>
-            <th>Тип</th>
-            <th>Сумма</th>
-            <th>Категория</th>
-            <th>Магазин</th>
-            <th>Контрагент</th>
-            <th>Комментарий</th>
-            <th>Создана</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="cashTransactionsBody">
-          <tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
-        </tbody>
-      </table>
-    </div>
   </div>
+</div>
 
-  <div id="cashflowDebtsTab" style="display:none">
-    <!-- Форма создания долга (всегда видна) -->
-    <div class="cash-form">
+<!-- Модалка: создание операции долга -->
+<div id="cashDebtModal" class="modal cash-modal" onclick="closeCashDebtModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header centered">
+      <h2>➕ Новая операция долга</h2>
+      <button class="close-btn" onclick="closeCashDebtModal()">&times;</button>
+    </div>
+    <div class="cash-form" style="margin-bottom:0">
       <div class="cash-form-row">
         <div>
           <div class="cash-label">Дата</div>
@@ -1810,62 +2086,114 @@ input[type=number]{-moz-appearance:textfield}
           <div class="cash-label">Комментарий</div>
           <input id="cashDebtNote" type="text" class="cash-input" placeholder="Примечание" />
         </div>
-        <div style="display:flex;align-items:flex-end">
-          <button class="cash-action-btn" onclick="addCashDebt()">Добавить</button>
+      </div>
+      <div class="modal-footer">
+        <button class="cash-action-btn" onclick="addCashDebt()">Создать</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка: редактирование операции ДДС -->
+<div id="editCashTxModal" class="modal cash-modal" onclick="closeEditCashTransactionModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header centered">
+      <h2>✏️ Редактирование операции</h2>
+      <button class="close-btn" onclick="closeEditCashTransactionModal()">&times;</button>
+    </div>
+    <div class="cash-form" style="padding:16px 20px">
+      <div class="cash-form-row">
+        <div>
+          <div class="cash-label">Дата</div>
+          <input id="editCashTxDate" type="date" class="cash-input" />
+        </div>
+        <div>
+          <div class="cash-label">Тип</div>
+          <select id="editCashTxType" class="cash-input">
+            <option value="income">Приход</option>
+            <option value="expense">Расход</option>
+          </select>
+        </div>
+        <div>
+          <div class="cash-label">Сумма</div>
+          <input id="editCashTxAmount" type="number" min="0" step="0.01" class="cash-input" placeholder="0" />
+        </div>
+        <div>
+          <div class="cash-label">Категория</div>
+          <select id="editCashTxCategory" class="cash-input" onchange="handleEditCashCategoryChange()"></select>
+        </div>
+        <div>
+          <div class="cash-label">Магазин</div>
+          <select id="editCashTxBusiness" class="cash-input" onchange="handleEditCashBusinessChange()"></select>
+        </div>
+        <div>
+          <div class="cash-label">Контрагент</div>
+          <select id="editCashTxCounterparty" class="cash-input" onchange="handleEditCashCounterpartyChange()"></select>
+        </div>
+        <div>
+          <div class="cash-label">Комментарий</div>
+          <input id="editCashTxNote" type="text" class="cash-input" placeholder="Примечание" />
         </div>
       </div>
-    </div>
-
-    <!-- Подвкладки -->
-    <div class="cash-sub-tabs">
-      <button class="cash-sub-tab active" onclick="switchDebtSubTab('summary')">Список долгов</button>
-      <button class="cash-sub-tab" onclick="switchDebtSubTab('operations')">Записи</button>
-    </div>
-
-    <!-- Вкладка: Сводка долгов -->
-    <div id="debtSummaryTab" style="display:block">
-      <div style="max-height:60vh;overflow:auto">
-        <table class="cash-table">
-          <thead>
-            <tr>
-              <th>Контрагент</th>
-              <th>Тип</th>
-              <th style="min-width:80px;text-align:center">Прогресс</th>
-              <th>Всего</th>
-              <th>Оплачено</th>
-              <th>Остаток</th>
-              <th>Статус</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="debtSummaryBody">
-            <tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
-          </tbody>
-        </table>
+      <div class="modal-footer">
+        <button class="api-btn" onclick="closeEditCashTransactionModal()">Отмена</button>
+        <button class="cash-action-btn" onclick="saveEditCashTransaction()">Сохранить</button>
       </div>
     </div>
+  </div>
+</div>
 
-    <!-- Вкладка: Записи долгов -->
-    <div id="debtOperationsTab" style="display:none">
-      <div style="max-height:50vh;overflow:auto">
-        <table class="cash-table">
-          <thead>
-            <tr>
-              <th>Дата операции</th>
-              <th>Тип</th>
-              <th>Тип операции</th>
-              <th>Сумма</th>
-              <th>Контрагент</th>
-              <th>Срок</th>
-              <th>Магазин</th>
-              <th>Комментарий</th>
-              <th style="text-align:right">Действия</th>
-            </tr>
-          </thead>
-          <tbody id="cashDebtsBody">
-            <tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
-          </tbody>
-        </table>
+<!-- Модалка: редактирование записи долга -->
+<div id="editDebtModal" class="modal cash-modal" onclick="closeEditDebtModal()">
+  <div class="modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header centered">
+      <h2>✏️ Редактирование записи долга</h2>
+      <button class="close-btn" onclick="closeEditDebtModal()">&times;</button>
+    </div>
+    <div class="cash-form" style="padding:16px 20px">
+      <div class="cash-form-row">
+        <div>
+          <div class="cash-label">Дата</div>
+          <input id="editDebtDate" type="date" class="cash-input" />
+        </div>
+        <div>
+          <div class="cash-label">Тип долга</div>
+          <select id="editDebtType" class="cash-input">
+            <option value="receivable">Должен контрагент</option>
+            <option value="payable">Должны контрагенту</option>
+          </select>
+        </div>
+        <div>
+          <div class="cash-label">Тип операции</div>
+          <select id="editDebtOperationType" class="cash-input">
+            <option value="increase">Начисление</option>
+            <option value="decrease">Погашение</option>
+          </select>
+        </div>
+        <div>
+          <div class="cash-label">Сумма</div>
+          <input id="editDebtAmount" type="number" min="0" step="0.01" class="cash-input" placeholder="0" />
+        </div>
+        <div>
+          <div class="cash-label">Контрагент</div>
+          <select id="editDebtCounterparty" class="cash-input" onchange="handleEditDebtCounterpartyChange()"></select>
+        </div>
+        <div>
+          <div class="cash-label">Срок</div>
+          <input id="editDebtDueDate" type="date" class="cash-input" />
+        </div>
+        <div>
+          <div class="cash-label">Магазин (опционально)</div>
+          <select id="editDebtBusiness" class="cash-input" onchange="handleEditDebtBusinessChange()"></select>
+        </div>
+        <div>
+          <div class="cash-label">Комментарий</div>
+          <input id="editDebtNote" type="text" class="cash-input" placeholder="Примечание" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="api-btn" onclick="closeEditDebtModal()">Отмена</button>
+        <button class="cash-action-btn" onclick="saveEditDebt()">Сохранить</button>
       </div>
     </div>
   </div>
@@ -1955,6 +2283,8 @@ let cashConfirmCallback = null;
 let cashCalendarYear = new Date().getFullYear();
 let cashSelectedStartDate = null;
 let cashSelectedEndDate = null;
+let currentEditCashTxId = null;
+let currentEditDebtId = null;
 
 function formatMoney(value) {
   const amount = Number(value || 0);
@@ -2281,8 +2611,12 @@ function updateCashBusinessOptions() {
   });
   const txSelect = document.getElementById('cashTxBusiness');
   const debtSelect = document.getElementById('cashDebtBusiness');
+  const editTxSelect = document.getElementById('editCashTxBusiness');
+  const editDebtSelect = document.getElementById('editDebtBusiness');
   if (txSelect) txSelect.innerHTML = businessOptions.join('');
   if (debtSelect) debtSelect.innerHTML = businessOptions.join('');
+  if (editTxSelect) editTxSelect.innerHTML = businessOptions.join('');
+  if (editDebtSelect) editDebtSelect.innerHTML = businessOptions.join('');
 }
 
 function updateCounterpartyOptions() {
@@ -2295,8 +2629,12 @@ function updateCounterpartyOptions() {
   });
   const txSelect = document.getElementById('cashTxCounterparty');
   const debtSelect = document.getElementById('cashDebtCounterparty');
+  const editTxSelect = document.getElementById('editCashTxCounterparty');
+  const editDebtSelect = document.getElementById('editDebtCounterparty');
   if (txSelect) txSelect.innerHTML = options.join('');
   if (debtSelect) debtSelect.innerHTML = options.join('');
+  if (editTxSelect) editTxSelect.innerHTML = options.join('');
+  if (editDebtSelect) editDebtSelect.innerHTML = options.join('');
 }
 
 function updateCashCategoryOptions() {
@@ -2308,11 +2646,12 @@ function updateCashCategoryOptions() {
     options.push('<option value="' + item.value + '">🕒 ' + escapeHtml(item.name) + '</option>');
   });
   const select = document.getElementById('cashTxCategory');
+  const editSelect = document.getElementById('editCashTxCategory');
   if (select) select.innerHTML = options.join('');
+  if (editSelect) editSelect.innerHTML = options.join('');
 }
 
-function handleCashBusinessChange(target) {
-  const selectId = target === 'debt' ? 'cashDebtBusiness' : 'cashTxBusiness';
+function handleBusinessChangeById(selectId) {
   const select = document.getElementById(selectId);
   if (!select) return;
   if (select.value !== '__new__') return;
@@ -2335,8 +2674,12 @@ function handleCashBusinessChange(target) {
   select.value = tempId;
 }
 
-function handleCounterpartyChange(target) {
-  const selectId = target === 'debt' ? 'cashDebtCounterparty' : 'cashTxCounterparty';
+function handleCashBusinessChange(target) {
+  const selectId = target === 'debt' ? 'cashDebtBusiness' : 'cashTxBusiness';
+  handleBusinessChangeById(selectId);
+}
+
+function handleCounterpartyChangeById(selectId) {
   const select = document.getElementById(selectId);
   if (!select) return;
   if (select.value !== '__new__') return;
@@ -2357,8 +2700,13 @@ function handleCounterpartyChange(target) {
   select.value = tempId;
 }
 
-function handleCashCategoryChange() {
-  const select = document.getElementById('cashTxCategory');
+function handleCounterpartyChange(target) {
+  const selectId = target === 'debt' ? 'cashDebtCounterparty' : 'cashTxCounterparty';
+  handleCounterpartyChangeById(selectId);
+}
+
+function handleCategoryChangeById(selectId) {
+  const select = document.getElementById(selectId);
   if (!select) return;
   if (select.value !== '__new__') return;
 
@@ -2376,6 +2724,30 @@ function handleCashCategoryChange() {
   });
   updateCashCategoryOptions();
   select.value = tempId;
+}
+
+function handleCashCategoryChange() {
+  handleCategoryChangeById('cashTxCategory');
+}
+
+function handleEditCashCategoryChange() {
+  handleCategoryChangeById('editCashTxCategory');
+}
+
+function handleEditCashBusinessChange() {
+  handleBusinessChangeById('editCashTxBusiness');
+}
+
+function handleEditDebtBusinessChange() {
+  handleBusinessChangeById('editDebtBusiness');
+}
+
+function handleEditCashCounterpartyChange() {
+  handleCounterpartyChangeById('editCashTxCounterparty');
+}
+
+function handleEditDebtCounterpartyChange() {
+  handleCounterpartyChangeById('editDebtCounterparty');
 }
 
 function loadCounterparties() {
@@ -2551,13 +2923,14 @@ function loadCashflowData() {
     console.log('Data received:', data);
     if (!data.success) throw new Error(data.error || 'Ошибка загрузки');
     cashTransactions = data.items || [];
-    renderCashTransactions();
     updateCashSummary();
+    const savedSubTab = localStorage.getItem('activeCashTxSubTab') || 'all';
+    switchCashTxSubTab(savedSubTab);
   })
   .catch(err => {
     console.error('Error loading cashflow:', err);
     const body = document.getElementById('cashTransactionsBody');
-    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
   });
 }
 
@@ -2598,12 +2971,18 @@ function updateCashSummary() {
 
 function renderCashTransactions() {
   const body = document.getElementById('cashTransactionsBody');
-  if (!cashTransactions.length) {
-    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет операций за период</td></tr>';
+  const activeTab = localStorage.getItem('activeCashTxSubTab') || 'all';
+  const filteredTransactions = activeTab === 'all'
+    ? cashTransactions
+    : cashTransactions.filter(tx => tx.tx_type === activeTab);
+
+  if (!filteredTransactions.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет операций за период</td></tr>';
+    updateCashTxSelectAllState();
     return;
   }
 
-  const rows = cashTransactions.map(item => {
+  const rows = filteredTransactions.map(item => {
     const dateText = item.tx_date ? new Date(item.tx_date).toLocaleDateString('ru-RU') : '—';
     const createdDate = item.created_at ? new Date(item.created_at) : null;
     const createdText = createdDate ? 
@@ -2615,6 +2994,7 @@ function renderCashTransactions() {
     const typeClass = item.tx_type === 'income' ? 'income' : 'expense';
     const businessName = getBusinessNameById(item.business_id);
     return '<tr>' +
+      '<td style="text-align:center"><input type="checkbox" class="cash-tx-checkbox" data-id="' + item.id + '" onchange="updateCashTxSelectAllState()" /></td>' +
       '<td>' + dateText + '</td>' +
       '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
       '<td>' + formatMoney(item.amount) + '</td>' +
@@ -2623,13 +3003,110 @@ function renderCashTransactions() {
       '<td>' + (item.counterparty || '—') + '</td>' +
       '<td>' + (item.note || '—') + '</td>' +
       '<td style="color:#94a3b8;font-size:12px">' + createdText + '</td>' +
-      '<td style="text-align:right">' +
-        '<button class="api-btn" style="padding:6px 10px" onclick="deleteCashTransaction(' + item.id + ')">Удалить</button>' +
+      '<td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">' +
+        '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Редактировать" onclick="editCashTransaction(' + item.id + ')">' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
+        '</button>' +
+        '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Удалить" onclick="deleteCashTransaction(' + item.id + ')">' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>' +
+        '</button>' +
       '</td>' +
     '</tr>';
   }).join('');
 
   body.innerHTML = rows;
+  updateCashTxSelectAllState();
+}
+
+function switchCashTxSubTab(tab) {
+  const tabs = document.querySelectorAll('.cash-tx-sub-tab');
+  tabs.forEach(btn => btn.classList.remove('active'));
+  const map = {
+    all: 0,
+    income: 1,
+    expense: 2
+  };
+  const index = map[tab] ?? 0;
+  if (tabs[index]) {
+    tabs[index].classList.add('active');
+  }
+  localStorage.setItem('activeCashTxSubTab', tab);
+  renderCashTransactions();
+}
+
+function switchCashTxSubTab(tab) {
+  const tabs = document.querySelectorAll('.cash-tx-sub-tab');
+  tabs.forEach(btn => btn.classList.remove('active'));
+  const map = {
+    all: 0,
+    income: 1,
+    expense: 2
+  };
+  const index = map[tab] ?? 0;
+  if (tabs[index]) {
+    tabs[index].classList.add('active');
+  }
+  localStorage.setItem('activeCashTxSubTab', tab);
+  renderCashTransactions();
+}
+
+function toggleAllCashTxCheckboxes(source) {
+  const checkboxes = document.querySelectorAll('#cashTransactionsBody .cash-tx-checkbox');
+  checkboxes.forEach(cb => { cb.checked = source.checked; });
+  updateCashTxSelectAllState();
+}
+
+function updateCashTxSelectAllState() {
+  const selectAll = document.getElementById('cashTxSelectAll');
+  if (!selectAll) return;
+  const checkboxes = Array.from(document.querySelectorAll('#cashTransactionsBody .cash-tx-checkbox'));
+  const checkedCount = checkboxes.filter(cb => cb.checked).length;
+  const selectedCountEl = document.getElementById('cashTxSelectedCount');
+  const bulkDeleteBtn = document.getElementById('cashTxBulkDeleteBtn');
+  if (selectedCountEl) {
+    selectedCountEl.textContent = String(checkedCount);
+  }
+  if (bulkDeleteBtn) {
+    const disabled = checkedCount === 0;
+    bulkDeleteBtn.disabled = disabled;
+    bulkDeleteBtn.style.opacity = disabled ? '0.5' : '1';
+    bulkDeleteBtn.style.cursor = disabled ? 'not-allowed' : 'pointer';
+  }
+  if (!checkboxes.length) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+    return;
+  }
+  selectAll.checked = checkedCount === checkboxes.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+}
+
+async function deleteSelectedCashTransactions() {
+  const checkboxes = Array.from(document.querySelectorAll('#cashTransactionsBody .cash-tx-checkbox'));
+  const selectedIds = checkboxes.filter(cb => cb.checked).map(cb => Number(cb.dataset.id)).filter(id => Number.isFinite(id));
+  if (!selectedIds.length) {
+    alert('❌ Выберите хотя бы одну операцию');
+    return;
+  }
+  if (!confirm('Удалить выбранные операции?')) return;
+
+  try {
+    const response = await fetch('/api/cash/transactions/bulk', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({ ids: selectedIds })
+    });
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Ошибка массового удаления');
+    }
+    loadCashflowData();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
 }
 
 function addCashTransaction() {
@@ -2683,6 +3160,7 @@ function addCashTransaction() {
       document.getElementById('cashTxCounterparty').value = '';
       document.getElementById('cashTxBusiness').value = '';
       document.getElementById('cashTxNote').value = '';
+      closeCashTransactionModal();
       
       loadCashflowData();
     } catch (err) {
@@ -2705,29 +3183,103 @@ function deleteCashTransaction(id) {
   .catch(err => alert('❌ ' + err.message));
 }
 
-function switchDebtSubTab(tab) {
-  const tabs = document.querySelectorAll('.cash-sub-tab');
-  const contents = document.querySelectorAll('.debt-sub-content');
-  
-  tabs.forEach(t => t.classList.remove('active'));
-  contents.forEach(c => c.style.display = 'none');
-  
-  if (tab === 'summary') {
-    tabs[0].classList.add('active');
-    const summaryTab = document.getElementById('debtSummaryTab');
-    if (summaryTab) summaryTab.style.display = 'block';
-  } else if (tab === 'operations') {
-    tabs[1].classList.add('active');
-    const operationsTab = document.getElementById('debtOperationsTab');
-    if (operationsTab) operationsTab.style.display = 'block';
+function editCashTransaction(id) {
+  const item = cashTransactions.find(tx => Number(tx.id) === Number(id));
+  if (!item) {
+    alert('❌ Операция не найдена');
+    return;
   }
-  
-  // Сохраняем активную подвкладку
-  localStorage.setItem('activeDebtSubTab', tab);
+
+  currentEditCashTxId = Number(id);
+  updateCashBusinessOptions();
+  updateCounterpartyOptions();
+  updateCashCategoryOptions();
+
+  document.getElementById('editCashTxDate').value = item.tx_date ? String(item.tx_date).split('T')[0] : '';
+  document.getElementById('editCashTxType').value = item.tx_type || 'income';
+  document.getElementById('editCashTxAmount').value = item.amount || '';
+  const categorySelect = document.getElementById('editCashTxCategory');
+  if (categorySelect) {
+    if (item.category && !Array.from(categorySelect.options).some(o => o.value === item.category)) {
+      categorySelect.insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(item.category) + '">' + escapeHtml(item.category) + '</option>');
+    }
+    categorySelect.value = item.category || '';
+  }
+  const businessSelect = document.getElementById('editCashTxBusiness');
+  if (businessSelect) {
+    const businessValue = item.business_id ? String(item.business_id) : '';
+    if (businessValue && !Array.from(businessSelect.options).some(o => o.value === businessValue)) {
+      businessSelect.insertAdjacentHTML('beforeend', '<option value="' + businessValue + '">' + businessValue + '</option>');
+    }
+    businessSelect.value = businessValue;
+  }
+  const counterpartySelect = document.getElementById('editCashTxCounterparty');
+  if (counterpartySelect) {
+    if (item.counterparty && !Array.from(counterpartySelect.options).some(o => o.value === item.counterparty)) {
+      counterpartySelect.insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(item.counterparty) + '">' + escapeHtml(item.counterparty) + '</option>');
+    }
+    counterpartySelect.value = item.counterparty || '';
+  }
+  document.getElementById('editCashTxNote').value = item.note || '';
+
+  const modal = document.getElementById('editCashTxModal');
+  if (modal) modal.classList.add('active');
+}
+
+function closeEditCashTransactionModal() {
+  const modal = document.getElementById('editCashTxModal');
+  if (modal) modal.classList.remove('active');
+  currentEditCashTxId = null;
+}
+
+async function saveEditCashTransaction() {
+  if (!currentEditCashTxId) return;
+  const txDate = document.getElementById('editCashTxDate').value;
+  const txType = document.getElementById('editCashTxType').value;
+  const amount = document.getElementById('editCashTxAmount').value;
+  const rawCategory = document.getElementById('editCashTxCategory').value === '__new__' ? '' : document.getElementById('editCashTxCategory').value;
+  const rawBusinessId = document.getElementById('editCashTxBusiness').value === '__new__' ? '' : document.getElementById('editCashTxBusiness').value;
+  const rawCounterparty = document.getElementById('editCashTxCounterparty').value === '__new__' ? '' : document.getElementById('editCashTxCounterparty').value;
+  const note = document.getElementById('editCashTxNote').value.trim();
+
+  if (!txDate || !amount || Number(amount) <= 0) {
+    alert('❌ Укажите дату и сумму');
+    return;
+  }
+
+  try {
+    const category = await resolvePendingCategory(rawCategory);
+    const businessId = await resolvePendingBusiness(rawBusinessId);
+    const counterparty = await resolvePendingCounterparty(rawCounterparty);
+
+    const response = await fetch('/api/cash/transactions/' + currentEditCashTxId, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({
+        tx_type: txType,
+        amount: Number(amount),
+        tx_date: txDate,
+        category: category || null,
+        counterparty: counterparty || null,
+        note: note || null,
+        business_id: businessId || null
+      })
+    });
+
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Ошибка сохранения');
+    closeEditCashTransactionModal();
+    loadCashflowData();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
 }
 
 function switchDebtSubTab(tab) {
-  const tabs = document.querySelectorAll('.cash-sub-tab');
+  const tabs = document.querySelectorAll('.cash-debt-sub-tab');
   const summaryTab = document.getElementById('debtSummaryTab');
   const operationsTab = document.getElementById('debtOperationsTab');
   
@@ -2755,8 +3307,11 @@ function loadCashDebts() {
   })
   .then(res => res.json())
   .then(data => {
+    console.log('Долги загружены:', data);
     if (!data.success) throw new Error(data.error || 'Ошибка загрузки');
     cashDebts = data.items || [];
+    console.log('cashDebts массив:', cashDebts.length, 'записей');
+    restoreDebtOperationsFilters();
     renderCashDebts();
     renderDebtSummary();
     updateCashSummary();
@@ -2766,8 +3321,9 @@ function loadCashDebts() {
     switchDebtSubTab(savedTab);
   })
   .catch(err => {
+    console.error('Ошибка загрузки долгов:', err);
     const body = document.getElementById('cashDebtsBody');
-    if (body) body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
+    if (body) body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">❌ ' + err.message + '</td></tr>';
   });
 }
 
@@ -2777,11 +3333,12 @@ function renderDebtSummary() {
   
   const summary = {};
   
-  // Группируем по debt_group_id
+  // Группируем по debt_group_id (каждая группа = отдельный долг)
   cashDebts.forEach(debt => {
-    const groupId = debt.debt_group_id || debt.id; // Fallback на id если нет group_id
+    const groupId = (debt.debt_group_id && debt.debt_group_id !== 'null') ? debt.debt_group_id : debt.id;
     if (!summary[groupId]) {
       summary[groupId] = {
+        group_id: groupId,
         counterparty: debt.counterparty || 'Без контрагента',
         debt_type: debt.debt_type,
         total_amount: 0,
@@ -2805,16 +3362,29 @@ function renderDebtSummary() {
   const summaries = Object.values(summary).map(item => {
     const remainder = item.total_amount - item.paid_amount;
     const isClosed = Math.abs(remainder) < 0.01; // Погрешность для float
+    const percent = item.total_amount > 0 ? (item.paid_amount / item.total_amount) * 100 : 0;
     return {
       ...item,
       remainder,
       isClosed,
-      statusLabel: isClosed ? 'Закрыт' : 'Открыт'
+      statusLabel: isClosed ? 'Закрыт' : 'Открыт',
+      percent
     };
   });
   
+  // Сортировка: 1) открытые выше, 2) по проценту выполнения (больше = выше)
+  summaries.sort((a, b) => {
+    // Сначала по статусу (открытые выше)
+    if (!a.isClosed && b.isClosed) return -1;
+    if (a.isClosed && !b.isClosed) return 1;
+    
+    // Внутри каждой группы - по проценту выполнения (больше процент = выше)
+    return b.percent - a.percent;
+  });
+  
   if (!summaries.length) {
-    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
+    updateDebtSummarySelectAllState();
     return;
   }
   
@@ -2831,43 +3401,309 @@ function renderDebtSummary() {
     const barBg = item.debt_type === 'receivable' ? 'rgba(34,197,94,0.13)' : 'rgba(239,68,68,0.13)';
     const progressBar = '<div class="debt-progress-bar" style="height:14px;width:70px;border-radius:8px;background:' + barBg + ';margin:0;display:flex;align-items:center;overflow:hidden;box-shadow:0 1px 4px 0 rgba(0,0,0,0.04)"><div style="height:100%;width:' + percent + '%;background:' + barColor + ';transition:width 0.3s;border-radius:8px"></div></div>';
     
-    return '<tr>' +
+    // Визуальное отличие для закрытых долгов
+    const rowStyle = item.isClosed ? 'opacity:0.3;background:rgba(255,255,255,0.01);filter:grayscale(0.8)' : '';
+    const statusIcon = item.isClosed ? '✓' : '●';
+    const statusColor = item.isClosed ? '#4b5563' : '#22c55e';
+    
+    return '<tr style="' + rowStyle + '">' +
+      '<td style="text-align:center"><input type="checkbox" class="debt-summary-checkbox" data-group-id="' + item.group_id + '" onchange="updateDebtSummarySelectAllState()" /></td>' +
       '<td>' + (item.counterparty || '—') + '</td>' +
       '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
       '<td style="text-align:center;vertical-align:middle">' + progressBar + '</td>' +
       '<td>' + formatMoney(item.total_amount) + '</td>' +
       '<td>' + formatMoney(item.paid_amount) + '</td>' +
       '<td><strong>' + formatMoney(item.remainder) + '</strong></td>' +
-      '<td>' + item.statusLabel + '</td>' +
-      '<td style="text-align:right">' +
-      '<button class="api-btn" style="padding:6px 10px" onclick="switchDebtSubTab(\\\'operations\\\')">Детали</button>' +
+      '<td><span style="color:' + statusColor + '">' + statusIcon + ' ' + item.statusLabel + '</span></td>' +
+      '<td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">' +
+      '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Детали" onclick="openDebtOperationsModal(\\\'' + item.group_id + '\\\')">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>' +
+      '</button>' +
       '</td>' +
     '</tr>';
   }).join('');
   
   body.innerHTML = rows;
+  updateDebtSummarySelectAllState();
+}
+
+function toggleAllDebtSummaryCheckboxes(source) {
+  const checkboxes = document.querySelectorAll('#debtSummaryBody .debt-summary-checkbox');
+  checkboxes.forEach(cb => { cb.checked = source.checked; });
+  updateDebtSummarySelectAllState();
+}
+
+function updateDebtSummarySelectAllState() {
+  const selectAll = document.getElementById('debtSummarySelectAll');
+  if (!selectAll) return;
+  const checkboxes = Array.from(document.querySelectorAll('#debtSummaryBody .debt-summary-checkbox'));
+  const checkedCount = checkboxes.filter(cb => cb.checked).length;
+  const selectedCountEl = document.getElementById('debtSummarySelectedCount');
+  const bulkDeleteBtn = document.getElementById('debtSummaryBulkDeleteBtn');
+  if (selectedCountEl) {
+    selectedCountEl.textContent = String(checkedCount);
+  }
+  if (bulkDeleteBtn) {
+    const disabled = checkedCount === 0;
+    bulkDeleteBtn.disabled = disabled;
+    bulkDeleteBtn.style.opacity = disabled ? '0.5' : '1';
+    bulkDeleteBtn.style.cursor = disabled ? 'not-allowed' : 'pointer';
+  }
+  if (!checkboxes.length) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+    return;
+  }
+  selectAll.checked = checkedCount === checkboxes.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+}
+
+async function deleteSelectedDebtSummaries() {
+  const checkboxes = Array.from(document.querySelectorAll('#debtSummaryBody .debt-summary-checkbox'));
+  const groupIds = checkboxes.filter(cb => cb.checked).map(cb => cb.dataset.groupId).filter(Boolean);
+  if (!groupIds.length) {
+    alert('❌ Выберите хотя бы одну запись');
+    return;
+  }
+  if (!confirm('Удалить выбранные долги и все их операции?')) return;
+
+  const groupSet = new Set(groupIds);
+  const idsToDelete = cashDebts
+    .filter(debt => {
+      const gid = (debt.debt_group_id && debt.debt_group_id !== 'null') ? debt.debt_group_id : String(debt.id);
+      return groupSet.has(String(gid));
+    })
+    .map(debt => Number(debt.id))
+    .filter(id => Number.isFinite(id));
+
+  if (!idsToDelete.length) {
+    alert('❌ Не удалось найти операции для удаления');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/cash/debts/bulk', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({ ids: idsToDelete })
+    });
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Ошибка массового удаления');
+    }
+    loadCashDebts();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
+}
+
+function openDebtOperationsModal(groupId) {
+  const modal = document.getElementById('debtOperationsModal');
+  const body = document.getElementById('debtOperationsModalBody');
+  const title = document.getElementById('debtOperationsModalTitle');
+  if (!modal || !body || !title) return;
+
+  const targetGroupId = String(groupId);
+  const operations = cashDebts.filter(debt => {
+    const gid = (debt.debt_group_id && debt.debt_group_id !== 'null') ? String(debt.debt_group_id) : String(debt.id);
+    return gid === targetGroupId;
+  });
+
+  const counterpartyName = operations[0]?.counterparty || '—';
+  title.textContent = 'Операции долга: ' + counterpartyName;
+
+  if (!operations.length) {
+    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Нет операций</td></tr>';
+  } else {
+    const rows = operations
+      .sort((a, b) => new Date(b.debt_date || 0) - new Date(a.debt_date || 0))
+      .map(item => {
+        const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
+        const amount = Number(item.amount || 0);
+        const isPayment = amount < 0;
+        const displayAmount = Math.abs(amount);
+        const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
+        const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
+        const operationTypeLabel = (item.operation_type === 'decrease' || (isPayment && !item.operation_type)) ? 'Погашение' : 'Начисление';
+        const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
+        const businessName = getBusinessNameById(item.business_id);
+
+        return '<tr>' +
+          '<td>' + debtDate + '</td>' +
+          '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
+          '<td>' + operationTypeLabel + '</td>' +
+          '<td>' + (isPayment ? '-' : '+') + formatMoney(displayAmount) + '</td>' +
+          '<td>' + (item.counterparty || '—') + '</td>' +
+          '<td>' + dueDate + '</td>' +
+          '<td>' + businessName + '</td>' +
+          '<td>' + (item.note || '—') + '</td>' +
+        '</tr>';
+      }).join('');
+
+    body.innerHTML = rows;
+  }
+
+  modal.classList.add('active');
+}
+
+function closeDebtOperationsModal() {
+  const modal = document.getElementById('debtOperationsModal');
+  if (modal) modal.classList.remove('active');
+}
+
+function openCashTransactionModal() {
+  const modal = document.getElementById('cashTransactionModal');
+  if (modal) modal.classList.add('active');
+}
+
+function closeCashTransactionModal() {
+  const modal = document.getElementById('cashTransactionModal');
+  if (modal) modal.classList.remove('active');
+}
+
+function openCashDebtModal() {
+  const modal = document.getElementById('cashDebtModal');
+  if (modal) modal.classList.add('active');
+}
+
+function closeCashDebtModal() {
+  const modal = document.getElementById('cashDebtModal');
+  if (modal) modal.classList.remove('active');
+}
+
+function getDebtOperationKey(item) {
+  const amount = Number(item.amount || 0);
+  const isPayment = amount < 0;
+  if (item.operation_type === 'decrease' || (isPayment && !item.operation_type)) return 'decrease';
+  return 'increase';
+}
+
+function getDebtOperationLabel(item) {
+  return getDebtOperationKey(item) === 'decrease' ? 'Погашение' : 'Начисление';
+}
+
+function getDebtOperationsFilterValues() {
+  const operationValue = localStorage.getItem('cashDebtOperationFilter') || 'all';
+  const typeValue = localStorage.getItem('cashDebtTypeFilter') || 'all';
+  return { operationValue, typeValue };
+}
+
+function restoreDebtOperationsFilters() {
+  localStorage.setItem('cashDebtOperationFilter', 'all');
+  localStorage.setItem('cashDebtTypeFilter', 'all');
+  updateDebtFilterButtons();
+}
+
+function updateDebtFilterButtons() {
+  const operationBtn = document.getElementById('cashDebtOperationFilterBtn');
+  const typeBtn = document.getElementById('cashDebtTypeFilterBtn');
+  const operationMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const operationValue = localStorage.getItem('cashDebtOperationFilter') || 'all';
+  const typeValue = localStorage.getItem('cashDebtTypeFilter') || 'all';
+  if (operationBtn) {
+    operationBtn.textContent = operationValue === 'increase' ? 'Начисления' : operationValue === 'decrease' ? 'Погашения' : 'Все операции';
+  }
+  if (typeBtn) {
+    typeBtn.textContent = typeValue === 'receivable' ? 'Нам должны' : typeValue === 'payable' ? 'Мы должны' : 'Все типы';
+  }
+  if (operationMenu) {
+    operationMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === operationValue);
+    });
+  }
+  if (typeMenu) {
+    typeMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === typeValue);
+    });
+  }
+}
+
+function toggleDebtOperationMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleDebtTypeMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('cashDebtTypeMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  if (opMenu) opMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function setDebtOperationFilter(value) {
+  localStorage.setItem('cashDebtOperationFilter', value);
+  const menu = document.getElementById('cashDebtOperationMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtFilterButtons();
+  renderCashDebts();
+}
+
+function setDebtTypeFilter(value) {
+  localStorage.setItem('cashDebtTypeFilter', value);
+  const menu = document.getElementById('cashDebtTypeMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtFilterButtons();
+  renderCashDebts();
+}
+
+document.addEventListener('click', () => {
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  if (opMenu) opMenu.classList.remove('open');
+  if (typeMenu) typeMenu.classList.remove('open');
+});
+
+function applyDebtOperationsFilters(items) {
+  const { operationValue, typeValue } = getDebtOperationsFilterValues();
+  return items.filter(item => {
+    if (operationValue !== 'all' && getDebtOperationKey(item) !== operationValue) return false;
+    if (typeValue !== 'all' && item.debt_type !== typeValue) return false;
+    return true;
+  });
 }
 
 function renderCashDebts() {
   const body = document.getElementById('cashDebtsBody');
   if (!cashDebts.length) {
-    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет записей</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет записей</td></tr>';
+    updateDebtSelectAllState();
     return;
   }
 
-  const rows = cashDebts.map(item => {
+  // Сортировка по дате операции (от новых к старым)
+  const sortedDebts = applyDebtOperationsFilters([...cashDebts]).sort((a, b) => {
+    const dateA = new Date(a.debt_date || 0);
+    const dateB = new Date(b.debt_date || 0);
+    return dateB - dateA;
+  });
+
+  if (!sortedDebts.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет записей по выбранным фильтрам</td></tr>';
+    updateDebtSelectAllState();
+    return;
+  }
+
+  const rows = sortedDebts.map(item => {
     const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
     const amount = Number(item.amount || 0);
     const isPayment = amount < 0;
     const displayAmount = Math.abs(amount);
     const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
     const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
-    // Определяем тип операции: из поля или по знаку суммы
-    const operationTypeLabel = (item.operation_type === 'decrease' || (isPayment && !item.operation_type)) ? 'Погашение' : 'Начисление';
+    const operationTypeLabel = getDebtOperationLabel(item);
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
     const businessName = getBusinessNameById(item.business_id);
     
     return '<tr>' +
+      '<td style="text-align:center"><input type="checkbox" class="cash-debt-checkbox" data-id="' + item.id + '" onchange="updateDebtSelectAllState()" /></td>' +
       '<td>' + debtDate + '</td>' +
       '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
       '<td>' + operationTypeLabel + '</td>' +
@@ -2876,13 +3712,78 @@ function renderCashDebts() {
       '<td>' + dueDate + '</td>' +
       '<td>' + businessName + '</td>' +
       '<td>' + (item.note || '—') + '</td>' +
-      '<td style="text-align:right">' +
-      '<button class="api-btn" style="padding:6px 10px" onclick="deleteCashDebt(' + item.id + ')">Удалить</button>' +
+      '<td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">' +
+      '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Редактировать" onclick="editCashDebt(' + item.id + ')">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
+      '</button>' +
+      '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Удалить" onclick="deleteCashDebt(' + item.id + ')">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>' +
+      '</button>' +
       '</td>' +
     '</tr>';
   }).join('');
 
   body.innerHTML = rows;
+  updateDebtSelectAllState();
+}
+
+function toggleAllDebtCheckboxes(source) {
+  const checkboxes = document.querySelectorAll('#cashDebtsBody .cash-debt-checkbox');
+  checkboxes.forEach(cb => { cb.checked = source.checked; });
+  updateDebtSelectAllState();
+}
+
+function updateDebtSelectAllState() {
+  const selectAll = document.getElementById('cashDebtSelectAll');
+  if (!selectAll) return;
+  const checkboxes = Array.from(document.querySelectorAll('#cashDebtsBody .cash-debt-checkbox'));
+  const checkedCount = checkboxes.filter(cb => cb.checked).length;
+  const selectedCountEl = document.getElementById('cashDebtSelectedCount');
+  const bulkDeleteBtn = document.getElementById('cashDebtBulkDeleteBtn');
+  if (selectedCountEl) {
+    selectedCountEl.textContent = String(checkedCount);
+  }
+  if (bulkDeleteBtn) {
+    const disabled = checkedCount === 0;
+    bulkDeleteBtn.disabled = disabled;
+    bulkDeleteBtn.style.opacity = disabled ? '0.5' : '1';
+    bulkDeleteBtn.style.cursor = disabled ? 'not-allowed' : 'pointer';
+  }
+  if (!checkboxes.length) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+    return;
+  }
+  selectAll.checked = checkedCount === checkboxes.length;
+  selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+}
+
+async function deleteSelectedCashDebts() {
+  const checkboxes = Array.from(document.querySelectorAll('#cashDebtsBody .cash-debt-checkbox'));
+  const selectedIds = checkboxes.filter(cb => cb.checked).map(cb => Number(cb.dataset.id)).filter(id => Number.isFinite(id));
+  if (!selectedIds.length) {
+    alert('❌ Выберите хотя бы одну запись');
+    return;
+  }
+  if (!confirm('Удалить выбранные записи?')) return;
+
+  try {
+    const response = await fetch('/api/cash/debts/bulk', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({ ids: selectedIds })
+    });
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Ошибка массового удаления');
+    }
+    loadCashDebts();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
 }
 
 function addCashDebt() {
@@ -2937,6 +3838,7 @@ function addCashDebt() {
       document.getElementById('cashDebtCounterparty').value = '';
       document.getElementById('cashDebtNote').value = '';
       document.getElementById('cashDebtDueDate').value = '';
+      closeCashDebtModal();
       loadCashDebts();
     } catch (err) {
       alert('❌ ' + err.message);
@@ -2975,6 +3877,105 @@ function deleteCashDebt(id) {
   .catch(err => alert('❌ ' + err.message));
 }
 
+function editCashDebt(id) {
+  const item = cashDebts.find(debt => Number(debt.id) === Number(id));
+  if (!item) {
+    alert('❌ Запись долга не найдена');
+    return;
+  }
+
+  currentEditDebtId = Number(id);
+  updateCashBusinessOptions();
+  updateCounterpartyOptions();
+
+  document.getElementById('editDebtDate').value = item.debt_date ? String(item.debt_date).split('T')[0] : '';
+  document.getElementById('editDebtType').value = item.debt_type || 'receivable';
+  const amount = Number(item.amount || 0);
+  const isPayment = amount < 0;
+  const operationType = item.operation_type || (isPayment ? 'decrease' : 'increase');
+  document.getElementById('editDebtOperationType').value = operationType;
+  document.getElementById('editDebtAmount').value = Math.abs(amount) || '';
+
+  const counterpartySelect = document.getElementById('editDebtCounterparty');
+  if (counterpartySelect) {
+    if (item.counterparty && !Array.from(counterpartySelect.options).some(o => o.value === item.counterparty)) {
+      counterpartySelect.insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(item.counterparty) + '">' + escapeHtml(item.counterparty) + '</option>');
+    }
+    counterpartySelect.value = item.counterparty || '';
+  }
+
+  document.getElementById('editDebtDueDate').value = item.due_date ? String(item.due_date).split('T')[0] : '';
+
+  const businessSelect = document.getElementById('editDebtBusiness');
+  if (businessSelect) {
+    const businessValue = item.business_id ? String(item.business_id) : '';
+    if (businessValue && !Array.from(businessSelect.options).some(o => o.value === businessValue)) {
+      businessSelect.insertAdjacentHTML('beforeend', '<option value="' + businessValue + '">' + businessValue + '</option>');
+    }
+    businessSelect.value = businessValue;
+  }
+
+  document.getElementById('editDebtNote').value = item.note || '';
+
+  const modal = document.getElementById('editDebtModal');
+  if (modal) modal.classList.add('active');
+}
+
+function closeEditDebtModal() {
+  const modal = document.getElementById('editDebtModal');
+  if (modal) modal.classList.remove('active');
+  currentEditDebtId = null;
+}
+
+async function saveEditDebt() {
+  if (!currentEditDebtId) return;
+  const debtDate = document.getElementById('editDebtDate').value;
+  const debtType = document.getElementById('editDebtType').value;
+  const operationType = document.getElementById('editDebtOperationType').value;
+  const amountInput = document.getElementById('editDebtAmount').value;
+  const rawCounterparty = document.getElementById('editDebtCounterparty').value === '__new__' ? '' : document.getElementById('editDebtCounterparty').value;
+  const dueDate = document.getElementById('editDebtDueDate').value;
+  const rawBusinessId = document.getElementById('editDebtBusiness').value === '__new__' ? '' : document.getElementById('editDebtBusiness').value;
+  const note = document.getElementById('editDebtNote').value.trim();
+
+  if (!amountInput || Number(amountInput) <= 0) {
+    alert('❌ Укажите сумму');
+    return;
+  }
+
+  try {
+    const counterparty = await resolvePendingCounterparty(rawCounterparty);
+    const businessId = await resolvePendingBusiness(rawBusinessId);
+    const operationAmount = Number(amountInput);
+    const finalAmount = operationType === 'decrease' ? -operationAmount : operationAmount;
+
+    const response = await fetch('/api/cash/debts/' + currentEditDebtId, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({
+        debt_date: debtDate || null,
+        debt_type: debtType,
+        amount: finalAmount,
+        counterparty: counterparty || null,
+        due_date: dueDate || null,
+        business_id: businessId || null,
+        operation_type: operationType,
+        note: note || null
+      })
+    });
+
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Ошибка сохранения');
+    closeEditDebtModal();
+    loadCashDebts();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
+}
+
 initCashRange();
 loadBusinesses();
 loadCounterparties();
@@ -2986,7 +3987,8 @@ loadCashDebts();
 const savedTab = localStorage.getItem('cashActiveTab') || 'transactions';
 switchCashTab(savedTab);
 if (savedTab === 'debts') {
-  switchDebtSubTab('summary');
+  const savedDebtTab = localStorage.getItem('activeDebtSubTab') || 'summary';
+  switchDebtSubTab(savedDebtTab);
 }
 </script>
 </body></html>`);
@@ -4147,12 +5149,13 @@ function loadCashflowData() {
       throw new Error(data.error || 'Ошибка загрузки');
     }
     cashTransactions = data.items || [];
-    renderCashTransactions();
     updateCashSummary();
+    const savedSubTab = localStorage.getItem('activeCashTxSubTab') || 'all';
+    switchCashTxSubTab(savedSubTab);
   })
   .catch(err => {
     const body = document.getElementById('cashTransactionsBody');
-    body.innerHTML = \`<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ \${err.message}</td></tr>\`;
+    body.innerHTML = \`<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">❌ \${err.message}</td></tr>\`;
   });
 }
 
@@ -4193,33 +5196,51 @@ function updateCashSummary() {
 
 function renderCashTransactions() {
   const body = document.getElementById('cashTransactionsBody');
-  if (!cashTransactions.length) {
-    body.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Нет операций за период</td></tr>';
+  const activeTab = localStorage.getItem('activeCashTxSubTab') || 'all';
+  const filteredTransactions = activeTab === 'all'
+    ? cashTransactions
+    : cashTransactions.filter(tx => tx.tx_type === activeTab);
+
+  if (!filteredTransactions.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет операций за период</td></tr>';
+    updateCashTxSelectAllState();
     return;
   }
 
-  const rows = cashTransactions.map(item => {
+  const rows = filteredTransactions.map(item => {
     const dateText = item.tx_date ? new Date(item.tx_date).toLocaleDateString('ru-RU') : '—';
+    const createdDate = item.created_at ? new Date(item.created_at) : null;
+    const createdText = createdDate ? 
+      createdDate.toLocaleDateString('ru-RU') + ' ' + 
+      createdDate.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'}) + 
+      ' <span style="opacity:0.6">(' + createdDate.toLocaleTimeString('ru-RU', {timeZoneName: 'short'}).split(' ').pop() + ')</span>' 
+      : '—';
     const typeLabel = item.tx_type === 'income' ? 'Приход' : 'Расход';
     const typeClass = item.tx_type === 'income' ? 'income' : 'expense';
     const businessName = getBusinessNameById(item.business_id);
-    return \`
-      <tr>
-        <td>\${dateText}</td>
-        <td><span class="cash-pill \${typeClass}">\${typeLabel}</span></td>
-        <td>\${formatMoney(item.amount)}</td>
-        <td>\${item.category || '—'}</td>
-        <td>\${businessName}</td>
-        <td>\${item.counterparty || '—'}</td>
-        <td>\${item.note || '—'}</td>
-        <td style="text-align:right">
-          <button class="api-btn" style="padding:6px 10px" onclick="deleteCashTransaction(\${item.id})">Удалить</button>
-        </td>
-      </tr>
-    \`;
+    return '<tr>' +
+      '<td style="text-align:center"><input type="checkbox" class="cash-tx-checkbox" data-id="' + item.id + '" onchange="updateCashTxSelectAllState()" /></td>' +
+      '<td>' + dateText + '</td>' +
+      '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
+      '<td>' + formatMoney(item.amount) + '</td>' +
+      '<td>' + (item.category || '—') + '</td>' +
+      '<td>' + businessName + '</td>' +
+      '<td>' + (item.counterparty || '—') + '</td>' +
+      '<td>' + (item.note || '—') + '</td>' +
+      '<td style="color:#94a3b8;font-size:12px">' + createdText + '</td>' +
+      '<td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">' +
+        '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Редактировать" onclick="editCashTransaction(' + item.id + ')">' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
+        '</button>' +
+        '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Удалить" onclick="deleteCashTransaction(' + item.id + ')">' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>' +
+        '</button>' +
+      '</td>' +
+    '</tr>';
   }).join('');
 
   body.innerHTML = rows;
+  updateCashTxSelectAllState();
 }
 
 function addCashTransaction() {
@@ -4264,6 +5285,7 @@ function addCashTransaction() {
     if (txType === 'expense') {
       document.getElementById('cashTxBusiness').value = businessId;
     }
+    closeCashTransactionModal();
     loadCashflowData();
   })
   .catch(err => alert('❌ ' + err.message));
@@ -4295,6 +5317,7 @@ function loadCashDebts() {
       throw new Error(data.error || 'Ошибка загрузки');
     }
     cashDebts = data.items || [];
+    restoreDebtOperationsFilters();
     renderCashDebts();
     
     // Восстанавливаем активную подвкладку
@@ -4303,31 +5326,45 @@ function loadCashDebts() {
   })
   .catch(err => {
     const body = document.getElementById('cashDebtsBody');
-    body.innerHTML = \`<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">❌ \${err.message}</td></tr>\`;
+    body.innerHTML = \`<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">❌ \${err.message}</td></tr>\`;
   });
 }
 
 function renderCashDebts() {
   const body = document.getElementById('cashDebtsBody');
   if (!cashDebts.length) {
-    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет записей</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет записей</td></tr>';
+    updateDebtSelectAllState();
     return;
   }
 
-  const rows = cashDebts.map(item => {
+  // Сортировка по дате операции (от новых к старым)
+  const sortedDebts = applyDebtOperationsFilters([...cashDebts]).sort((a, b) => {
+    const dateA = new Date(a.debt_date || 0);
+    const dateB = new Date(b.debt_date || 0);
+    return dateB - dateA;
+  });
+
+  if (!sortedDebts.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет записей по выбранным фильтрам</td></tr>';
+    updateDebtSelectAllState();
+    return;
+  }
+
+  const rows = sortedDebts.map(item => {
     const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
     const amount = Number(item.amount || 0);
     const isPayment = amount < 0;
     const displayAmount = Math.abs(amount);
     const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
     const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
-    // Определяем тип операции: из поля или по знаку суммы
-    const operationTypeLabel = (item.operation_type === 'decrease' || (isPayment && !item.operation_type)) ? 'Погашение' : 'Начисление';
+    const operationTypeLabel = getDebtOperationLabel(item);
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
     const businessName = getBusinessNameById(item.business_id);
     
     return \`
       <tr>
+        <td style="text-align:center"><input type="checkbox" class="cash-debt-checkbox" data-id="\${item.id}" onchange="updateDebtSelectAllState()" /></td>
         <td>\${debtDate}</td>
         <td><span class="cash-pill \${typeClass}">\${typeLabel}</span></td>
         <td>\${operationTypeLabel}</td>
@@ -4336,14 +5373,20 @@ function renderCashDebts() {
         <td>\${dueDate}</td>
         <td>\${businessName}</td>
         <td>\${item.note || '—'}</td>
-        <td style="text-align:right">
-          <button class="api-btn" style="padding:6px 10px" onclick="deleteCashDebt(\${item.id})">Удалить</button>
+        <td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">
+          <button class="api-btn" style="padding:6px 8px;line-height:0" title="Редактировать" onclick="editCashDebt(\${item.id})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="api-btn" style="padding:6px 8px;line-height:0" title="Удалить" onclick="deleteCashDebt(\${item.id})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
         </td>
       </tr>
     \`;
   }).join('');
 
   body.innerHTML = rows;
+  updateDebtSelectAllState();
 }
 
 function addCashDebt() {
@@ -4382,6 +5425,7 @@ function addCashDebt() {
     document.getElementById('cashDebtAmount').value = '';
     document.getElementById('cashDebtCounterparty').value = '';
     document.getElementById('cashDebtNote').value = '';
+    closeCashDebtModal();
     loadCashDebts();
   })
   .catch(err => alert('❌ ' + err.message));
@@ -4420,6 +5464,50 @@ function deleteCashDebt(id) {
     loadCashDebts();
   })
   .catch(err => alert('❌ ' + err.message));
+}
+
+function editCashDebt(id) {
+  const item = cashDebts.find(debt => Number(debt.id) === Number(id));
+  if (!item) {
+    alert('❌ Запись долга не найдена');
+    return;
+  }
+
+  currentEditDebtId = Number(id);
+  updateCashBusinessOptions();
+  updateCounterpartyOptions();
+
+  document.getElementById('editDebtDate').value = item.debt_date ? String(item.debt_date).split('T')[0] : '';
+  document.getElementById('editDebtType').value = item.debt_type || 'receivable';
+  const amount = Number(item.amount || 0);
+  const isPayment = amount < 0;
+  const operationType = item.operation_type || (isPayment ? 'decrease' : 'increase');
+  document.getElementById('editDebtOperationType').value = operationType;
+  document.getElementById('editDebtAmount').value = Math.abs(amount) || '';
+
+  const counterpartySelect = document.getElementById('editDebtCounterparty');
+  if (counterpartySelect) {
+    if (item.counterparty && !Array.from(counterpartySelect.options).some(o => o.value === item.counterparty)) {
+      counterpartySelect.insertAdjacentHTML('beforeend', '<option value="' + escapeHtml(item.counterparty) + '">' + escapeHtml(item.counterparty) + '</option>');
+    }
+    counterpartySelect.value = item.counterparty || '';
+  }
+
+  document.getElementById('editDebtDueDate').value = item.due_date ? String(item.due_date).split('T')[0] : '';
+
+  const businessSelect = document.getElementById('editDebtBusiness');
+  if (businessSelect) {
+    const businessValue = item.business_id ? String(item.business_id) : '';
+    if (businessValue && !Array.from(businessSelect.options).some(o => o.value === businessValue)) {
+      businessSelect.insertAdjacentHTML('beforeend', '<option value="' + businessValue + '">' + businessValue + '</option>');
+    }
+    businessSelect.value = businessValue;
+  }
+
+  document.getElementById('editDebtNote').value = item.note || '';
+
+  const modal = document.getElementById('editDebtModal');
+  if (modal) modal.classList.add('active');
 }
 
 // Показать детальную информацию об отчёте
@@ -5872,7 +6960,7 @@ app.get('/wb-price', requireAuth, async (req, res) => {
   const destList = [-1257786, -1029256, -1059509]; // сократим для скорости
   const appTypes = [1]; // сначала только тип 1
   const endpoints = [
-    (appType,dest) => `https://card.wb.ru/cards/v2/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`,
+    (appType,dest) => `https://card.wb.ru/cards/v4/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`,
     (appType,dest) => `https://card.wb.ru/cards/v1/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`,
     (appType,dest) => `https://card.wb.ru/cards/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`
   ];
@@ -5895,8 +6983,9 @@ app.get('/wb-price', requireAuth, async (req, res) => {
             },
             timeout: 10000
           });
-          attemptStatuses.push({ url, status: response.status, count: response.data?.data?.products?.length || 0 });
-          const product = response.data?.data?.products?.find(p => String(p.id) === String(nm)) || response.data?.data?.products?.[0];
+          const products = response?.data?.products || response?.data?.data?.products || [];
+          attemptStatuses.push({ url, status: response.status, count: products.length || 0 });
+          const product = products.find(p => String(p.id) === String(nm)) || products[0];
           if (!product) continue;
           // Для диагностики: показать часть объектов price из sizes
           try {
@@ -6151,7 +7240,7 @@ app.get('/wb-raw', requireAuth, async (req, res) => {
   const nm = req.query.nm;
   if (!nm) return res.status(400).json({ error: 'nm обязателен' });
   try {
-    const url = `https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm=${nm}`;
+    const url = `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm=${nm}`;
     const response = await axios.get(url, { headers: { 'User-Agent': 'WildberriesApp/1.0', 'Accept': 'application/json' }, timeout: 10000 });
     res.json(response.data);
   } catch (e) {
@@ -6168,7 +7257,7 @@ app.get('/wb-price-plain', async (req, res) => {
     const destList = [-1257786, -1029256, -1059509];
     const appTypes = [1];
     const endpoints = [
-      (appType,dest) => `https://card.wb.ru/cards/v2/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`
+      (appType,dest) => `https://card.wb.ru/cards/v4/detail?appType=${appType}&curr=rub&dest=${dest}&nm=${nm}`
     ];
     for (const dest of destList) {
       for (const appType of appTypes) {
@@ -6176,7 +7265,8 @@ app.get('/wb-price-plain', async (req, res) => {
           const url = buildUrl(appType, dest);
           try {
             const response = await axios.get(url, { headers: { 'User-Agent': 'WildberriesApp/1.0', 'Accept': 'application/json' }, timeout: 10000 });
-            const product = response.data?.data?.products?.find(p => String(p.id) === String(nm)) || response.data?.data?.products?.[0];
+            const products = response?.data?.products || response?.data?.data?.products || [];
+            const product = products.find(p => String(p.id) === String(nm)) || products[0];
             if (!product) continue;
             let rawPrice = extractPrice(product);
             if (rawPrice <= 0 && Array.isArray(product.sizes)) {
@@ -6227,10 +7317,10 @@ app.get('/wb-price-csv', async (req, res) => {
 
   // Пытаемся через v2 detail
   for (const dest of destList) {
-    const url = `https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=${dest}&nm=${nm}`;
+    const url = `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=${dest}&nm=${nm}`;
     try {
       const r = await axios.get(url, { headers: { 'User-Agent':'WildberriesApp/1.0' }, timeout: 8000 });
-      const products = r?.data?.data?.products || [];
+      const products = r?.data?.products || r?.data?.data?.products || [];
       if (!products.length) continue;
       product = products.find(p => String(p.id) === nm) || products[0];
       priceU = extractPrice(product);
@@ -6243,7 +7333,7 @@ app.get('/wb-price-csv', async (req, res) => {
     try {
       const url = `https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&nm=${nm}`;
       const r = await axios.get(url, { headers: { 'User-Agent':'WildberriesApp/1.0' }, timeout: 8000 });
-      const products = r?.data?.data?.products || [];
+      const products = r?.data?.products || r?.data?.data?.products || [];
       if (products.length) {
         product = products.find(p => String(p.id) === nm) || products[0];
         if (priceU <= 0) priceU = extractPrice(product);
@@ -6319,18 +7409,18 @@ app.get('/wb-max', requireAuth, async (req, res) => {
   let source = null;
   let destUsed = null;
 
-  // Пробуем v2/detail с разными dest
+  // Пробуем v4/detail с разными dest
   for (const d of destCandidates) {
     try {
-      const url = `https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=${d}&nm=${nm}`;
+      const url = `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=${d}&nm=${nm}`;
       const response = await axios.get(url, {
         headers: { 'User-Agent': 'WildberriesApp/1.0', 'Accept': 'application/json' },
         timeout: 10000
       });
-      const products = response?.data?.data?.products || [];
+      const products = response?.data?.products || response?.data?.data?.products || [];
       if (products.length > 0) {
         product = products.find(p => String(p.id) === String(nm)) || products[0];
-        source = `v2/detail`;
+        source = `v4/detail`;
         destUsed = d;
         break;
       }
@@ -6347,7 +7437,7 @@ app.get('/wb-max', requireAuth, async (req, res) => {
         headers: { 'User-Agent': 'WildberriesApp/1.0' },
         timeout: 10000
       });
-      const products = response?.data?.data?.products || [];
+      const products = response?.data?.products || response?.data?.data?.products || [];
       if (products.length > 0) {
         product = products[0];
         source = 'v1/detail';
@@ -6527,12 +7617,12 @@ app.get('/wb-max-csv', async (req, res) => {
   try {
     for (const d of destCandidates) {
       try {
-        const url = `https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=${d}&nm=${nm}`;
+        const url = `https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=${d}&nm=${nm}`;
         const r = await axios.get(url, { headers: { 'User-Agent': 'WildberriesApp/1.0' }, timeout: 10000 });
-        const products = r?.data?.data?.products || [];
+        const products = r?.data?.products || r?.data?.data?.products || [];
         if (products.length) {
           product = products.find(p => String(p.id) === String(nm)) || products[0];
-          source = `v2:${d}`;
+          source = `v4:${d}`;
           break;
         }
       } catch (_) {}
@@ -6543,7 +7633,7 @@ app.get('/wb-max-csv', async (req, res) => {
       try {
         const url = `https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&nm=${nm}`;
         const r = await axios.get(url, { headers: { 'User-Agent': 'WildberriesApp/1.0' }, timeout: 10000 });
-        const products = r?.data?.data?.products || [];
+        const products = r?.data?.products || r?.data?.data?.products || [];
         if (products.length) {
           product = products[0];
           source = 'v1';
@@ -6596,7 +7686,7 @@ app.get('/wb-max-csv', async (req, res) => {
     const feedbacks = safeGet(product, 'feedbacks', 0);
     const pics = Array.isArray(product?.pics) ? product.pics.length : (Array.isArray(product?.images) ? product.images.length : 0);
     const { totalQty, warehouses } = summarizeStocks(product || {});
-    const destUsed = source && source.startsWith('v2:') ? source.split(':')[1] : (dest || '');
+    const destUsed = source && source.startsWith('v4:') ? source.split(':')[1] : (dest || '');
     const currency = currencyByDomain(domain);
     const url = domain === 'kg' ? `https://www.wildberries.kg/catalog/${nm}/detail.aspx` : domain === 'kz' ? `https://www.wildberries.kz/catalog/${nm}/detail.aspx` : `https://www.wildberries.ru/catalog/${nm}/detail.aspx`;
 

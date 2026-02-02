@@ -625,6 +625,21 @@ async function deleteCashTransaction(accountId, txId) {
   return !error;
 }
 
+async function deleteCashTransactionsBulk(accountId, txIds) {
+  const ids = Array.isArray(txIds) ? txIds.map(Number).filter(id => Number.isFinite(id)) : [];
+  if (!ids.length) return 0;
+
+  const { data, error } = await supabase
+    .from('cash_transactions')
+    .delete()
+    .in('id', ids)
+    .eq('account_id', accountId)
+    .select('id');
+
+  if (error) throw error;
+  return (data || []).length;
+}
+
 async function getCashSummary(accountId, dateFrom = null, dateTo = null) {
   const rows = await getCashTransactions(accountId, dateFrom, dateTo);
   let income = 0;
@@ -671,16 +686,18 @@ async function findOpenDebtGroup(accountId, counterparty, debtType, businessId =
     // Группируем по debt_group_id и считаем сумму
     const groups = {};
     (query.data || []).forEach(row => {
-      if (!groups[row.debt_group_id]) {
-        groups[row.debt_group_id] = 0;
+      const gid = row.debt_group_id;
+      if (!gid || gid === 'null') return; // Пропускаем null/undefined
+      if (!groups[gid]) {
+        groups[gid] = 0;
       }
-      groups[row.debt_group_id] += Number(row.amount || 0);
+      groups[gid] += Number(row.amount || 0);
     });
 
     // Ищем первую незакрытую группу (сумма != 0)
     for (const [groupId, total] of Object.entries(groups)) {
       if (Math.abs(total) > 0.01) { // Небольшая погрешность для float
-        return { debt_group_id: groupId };
+        return { debt_group_id: groupId, balance: total };
       }
     }
   } else {
@@ -695,16 +712,18 @@ async function findOpenDebtGroup(accountId, counterparty, debtType, businessId =
     // Группируем по debt_group_id и считаем сумму
     const groups = {};
     (allDebts || []).forEach(row => {
-      if (!groups[row.debt_group_id]) {
-        groups[row.debt_group_id] = 0;
+      const gid = row.debt_group_id;
+      if (!gid || gid === 'null') return; // Пропускаем null/undefined
+      if (!groups[gid]) {
+        groups[gid] = 0;
       }
-      groups[row.debt_group_id] += Number(row.amount || 0);
+      groups[gid] += Number(row.amount || 0);
     });
 
     // Ищем первую незакрытую группу (сумма != 0)
     for (const [groupId, total] of Object.entries(groups)) {
       if (Math.abs(total) > 0.01) { // Небольшая погрешность для float
-        return { debt_group_id: groupId };
+        return { debt_group_id: groupId, balance: total };
       }
     }
   }
@@ -728,21 +747,27 @@ async function createCashDebt(accountId, payload) {
 
   await upsertCounterparty(accountId, counterparty);
 
+  const insertPayload = {
+    account_id: accountId,
+    business_id,
+    debt_date,
+    debt_type,
+    amount,
+    counterparty,
+    due_date,
+    status,
+    note,
+    operation_type,
+    debt_group_id
+  };
+
+  if (!debt_group_id) {
+    delete insertPayload.debt_group_id;
+  }
+
   const { data, error } = await supabase
     .from('cash_debts')
-    .insert({
-      account_id: accountId,
-      business_id,
-      debt_date,
-      debt_type,
-      amount,
-      counterparty,
-      due_date,
-      status,
-      note,
-      operation_type,
-      debt_group_id
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
@@ -755,18 +780,24 @@ async function getCashDebts(accountId, status = null) {
     .from('cash_debts')
     .select('*')
     .eq('account_id', accountId)
-    .order('due_date', { ascending: true });
+    .order('debt_date', { ascending: false });
 
   if (status) {
     query = query.eq('status', status);
   }
 
   const { data, error } = await query;
-  return error ? [] : data;
+  
+  if (error) {
+    console.error('Ошибка загрузки долгов:', error);
+    return [];
+  }
+  
+  return data || [];
 }
 
 async function updateCashDebt(accountId, debtId, updates) {
-  const allowedFields = ['debt_type', 'amount', 'counterparty', 'due_date', 'status', 'note', 'business_id'];
+  const allowedFields = ['debt_date', 'debt_type', 'amount', 'counterparty', 'due_date', 'status', 'note', 'business_id', 'operation_type'];
   const filteredUpdates = {};
 
   for (const key of Object.keys(updates || {})) {
@@ -800,6 +831,21 @@ async function deleteCashDebt(accountId, debtId) {
     .eq('account_id', accountId);
 
   return !error;
+}
+
+async function deleteCashDebtsBulk(accountId, debtIds) {
+  const ids = Array.isArray(debtIds) ? debtIds.map(Number).filter(id => Number.isFinite(id)) : [];
+  if (!ids.length) return 0;
+
+  const { data, error } = await supabase
+    .from('cash_debts')
+    .delete()
+    .in('id', ids)
+    .eq('account_id', accountId)
+    .select('id');
+
+  if (error) throw error;
+  return (data || []).length;
 }
 
 // ==================== КЭШИРОВАННЫЕ ДАННЫЕ WB ====================
@@ -1011,6 +1057,7 @@ module.exports = {
   getCashTransactions,
   updateCashTransaction,
   deleteCashTransaction,
+  deleteCashTransactionsBulk,
   getCashSummary,
   // Долги
   findOpenDebtGroup,
@@ -1018,6 +1065,7 @@ module.exports = {
   getCashDebts,
   updateCashDebt,
   deleteCashDebt,
+  deleteCashDebtsBulk,
   // Кэш WB данных
   getSalesFromCache,
   getOrdersFromCache,

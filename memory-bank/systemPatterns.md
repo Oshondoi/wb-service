@@ -38,6 +38,8 @@ Critical Paths:
 - `/api/wb-finance`: GET financial data for specific business (via `businessId` param)
 - `/api/cash/transactions`: cashflow CRUD (income/expense)
 - `/api/cash/debts`: debts CRUD
+- `/api/cash/transactions/bulk`: bulk delete cashflow operations
+- `/api/cash/debts/bulk`: bulk delete debt records
 - `/wb-price-csv`: minimal, fast, public; returns `price,name`
 - `/wb-max`: rich JSON with seller info, stocks, rating, images (requires auth)
 - `/`: Cashflow (ДДС) main page
@@ -46,6 +48,7 @@ Critical Paths:
 Cashflow UX Patterns:
 - В ДДС «Создать новый…» сначала сохраняет в памяти, запись в БД — только после «Добавить»
 - Перед сохранением операции/долга показывается модалка подтверждения
+- Редактирование операций/долгов выполняется через модалки с сохранением по кнопке
 
 Multi-Company Reporting Patterns:
 - **Sales Report**: Aggregates data by `nmId + brand + company_name` when "All active companies" selected
