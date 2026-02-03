@@ -38,6 +38,7 @@ Critical Paths:
 - `/api/businesses`: GET/POST for listing and creating companies
 - `/api/businesses/:id`: PUT/DELETE for updating and removing companies
 - `/api/wb-finance`: GET financial data for specific business (via `businessId` param)
+- `/api/wb-stocks`: GET WB stocks by API keys (multi-company, supports filtering by businessIds)
 - `/api/cash/transactions`: cashflow CRUD (income/expense)
 - `/api/cash/debts`: debts CRUD
 - `/api/cash/transactions/bulk`: bulk delete cashflow operations
@@ -51,6 +52,13 @@ Cashflow UX Patterns:
 - В ДДС «Создать новый…» сначала сохраняет в памяти, запись в БД — только после «Добавить»
 - Перед сохранением операции/долга показывается модалка подтверждения
 - Редактирование операций/долгов выполняется через модалки с сохранением по кнопке
+
+Stocks (Остатки) UX Patterns:
+- «Остатки» — третья вкладка ДДС с двумя подвкладками: API и «У себя на складе»
+- Данные WB подтягиваются по API ключам выбранных компаний
+- Итоговый остаток = на складе + в пути к клиенту + в пути от клиента
+- Стоимость = итоговый остаток × себестоимость (из `product_costs`)
+- Мультивыбор магазинов через dropdown в стиле фильтров долгов
 
 Multi-Company Reporting Patterns:
 - **Sales Report**: Aggregates data by `nmId + brand + company_name` when "All active companies" selected

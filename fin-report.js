@@ -1036,9 +1036,92 @@ app.get('/api/wb-fin-report', requireAuth, async (req, res) => {
   }
 });
 
+// API для получения остатков WB по API ключам
+app.get('/api/wb-stocks', requireAuth, async (req, res) => {
+  try {
+    const rawIds = (req.query.businessIds || '').split(',').map(id => parseInt(id, 10)).filter(Boolean);
+    const businesses = await db.getBusinessesByAccount(req.account.id, false, true);
+    const filtered = rawIds.length ? businesses.filter(b => rawIds.includes(b.id)) : businesses;
+
+    if (!filtered.length) {
+      return res.json({ success: false, error: 'Нет магазинов с API ключом' });
+    }
+
+    const dateFrom = req.query.dateFrom || '2019-01-01';
+    const itemsMap = new Map();
+    const errors = [];
+
+    for (const business of filtered) {
+      if (!business.wb_api_key) continue;
+      try {
+        const url = 'https://statistics-api.wildberries.ru/api/v1/supplier/stocks?dateFrom=' + dateFrom;
+        const response = await axios.get(url, {
+          headers: { 'Authorization': business.wb_api_key },
+          timeout: 60000
+        });
+
+        const stocks = response.data || [];
+        stocks.forEach(stock => {
+          const nmId = stock.nmId || stock.nm_id;
+          if (!nmId) return;
+
+          const key = business.id + ':' + nmId;
+          const qty = Number(stock.quantity || stock.quantityFull || stock.quantityNotInOrders || 0);
+          const inWayToClient = Number(stock.inWayToClient || stock.inWayToClientQty || 0);
+          const inWayFromClient = Number(stock.inWayFromClient || stock.inWayFromClientQty || 0);
+
+          if (!itemsMap.has(key)) {
+            itemsMap.set(key, {
+              business_id: business.id,
+              nm_id: nmId,
+              brand: stock.brand || stock.tradeMark || '',
+              subject: stock.subject || stock.category || '',
+              qty: 0,
+              in_way_to_client: 0,
+              in_way_from_client: 0,
+              total_qty: 0
+            });
+          }
+
+          const item = itemsMap.get(key);
+          item.qty += qty;
+          item.in_way_to_client += inWayToClient;
+          item.in_way_from_client += inWayFromClient;
+          item.total_qty = item.qty + item.in_way_to_client + item.in_way_from_client;
+        });
+      } catch (err) {
+        errors.push({ business_id: business.id, error: err.message });
+      }
+    }
+
+    const items = Array.from(itemsMap.values());
+    return res.json({ success: true, items, errors });
+  } catch (err) {
+    return res.json({ success: false, error: err.message });
+  }
+});
+
 // API для выхода
 app.get('/api/logout', (req, res) => {
-  req.session.destroy();
+  if (req.session) {
+    req.session.destroy(() => {
+      res.clearCookie('authToken', {
+        httpOnly: false,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/'
+      });
+      res.redirect('/login');
+    });
+    return;
+  }
+
+  res.clearCookie('authToken', {
+    httpOnly: false,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/'
+  });
   res.redirect('/login');
 });
 
@@ -1105,7 +1188,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
   </div>
   <div class="toolbar">
     <button class="api-btn" onclick="window.location.href='/'">📈 Главная</button>
-    <button class="api-btn secondary" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
+    <button class="api-btn secondary" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
   </div>
 </div>
 <div class="section">
@@ -1817,7 +1900,7 @@ input[type=number]{-moz-appearance:textfield}
         <span>Период:</span>
         <span id="cashDateRangeDisplay" class="range-value">—</span>
       </button>
-      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
+      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
     </div>
   </div>
 
@@ -1852,6 +1935,7 @@ input[type=number]{-moz-appearance:textfield}
   <div class="cash-tabs">
     <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
     <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
+    <button id="cashTabStocks" class="cash-tab-btn" onclick="switchCashTab('stocks')">Остатки</button>
   </div>
 
   <div id="cashflowTransactionsTab">
@@ -1972,6 +2056,73 @@ input[type=number]{-moz-appearance:textfield}
           </thead>
           <tbody id="cashDebtsBody">
             <tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="cashflowStocksTab" style="display:none">
+    <div class="cash-sub-tabs" style="margin-top:8px">
+      <button class="cash-sub-tab cash-stock-sub-tab active" onclick="switchCashStockSubTab('api')">По API ключам</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" onclick="switchCashStockSubTab('local')">У себя на складе</button>
+    </div>
+
+    <div id="cashStocksApiTab">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <div class="filter-menu">
+            <button id="cashStocksBusinessBtn" class="api-btn secondary" style="padding:6px 10px" onclick="toggleStocksBusinessMenu(event)">Все магазины</button>
+            <div id="cashStocksBusinessMenu" class="filter-dropdown" onclick="event.stopPropagation()"></div>
+          </div>
+          <button id="cashStocksRefreshBtn" class="api-btn" style="padding:6px 10px" onclick="loadStocksData()">Обновить</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Магазин</th>
+              <th>Бренд</th>
+              <th>Предмет</th>
+              <th>Артикул WB</th>
+              <th style="text-align:right">На складе</th>
+              <th style="text-align:right">В пути к клиенту</th>
+              <th style="text-align:right">В пути от клиента</th>
+              <th style="text-align:right">Итого</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody id="cashStocksBody">
+            <tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="cashStocksLocalTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksLocalCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <button class="api-btn" style="padding:6px 10px" disabled>Добавить позицию</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Наименование</th>
+              <th>Артикул WB</th>
+              <th style="text-align:right">Количество</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" class="cash-muted" style="text-align:center;padding:16px">Раздел в разработке</td></tr>
           </tbody>
         </table>
       </div>
@@ -2304,10 +2455,17 @@ let cashSelectedStartDate = null;
 let cashSelectedEndDate = null;
 let currentEditCashTxId = null;
 let currentEditDebtId = null;
+let cashStocksItems = [];
+let cashStocksCosts = {};
 
 function formatMoney(value) {
   const amount = Number(value || 0);
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' }).format(amount);
+}
+
+function formatQty(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat('ru-RU').format(amount);
 }
 
 function escapeHtml(value) {
@@ -2586,20 +2744,39 @@ function applyCashDateRange() {
 function switchCashTab(tab) {
   const transactionsTab = document.getElementById('cashflowTransactionsTab');
   const debtsTab = document.getElementById('cashflowDebtsTab');
+  const stocksTab = document.getElementById('cashflowStocksTab');
   const btnTransactions = document.getElementById('cashTabTransactions');
   const btnDebts = document.getElementById('cashTabDebts');
+  const btnStocks = document.getElementById('cashTabStocks');
 
   if (tab === 'debts') {
     transactionsTab.style.display = 'none';
     debtsTab.style.display = 'block';
+    stocksTab.style.display = 'none';
     btnTransactions.classList.remove('active');
     btnDebts.classList.add('active');
+    btnStocks.classList.remove('active');
     localStorage.setItem('cashActiveTab', 'debts');
+  } else if (tab === 'stocks') {
+    transactionsTab.style.display = 'none';
+    debtsTab.style.display = 'none';
+    stocksTab.style.display = 'block';
+    btnTransactions.classList.remove('active');
+    btnDebts.classList.remove('active');
+    btnStocks.classList.add('active');
+    localStorage.setItem('cashActiveTab', 'stocks');
+    const savedStockTab = localStorage.getItem('activeStockSubTab') || 'api';
+    switchCashStockSubTab(savedStockTab);
+    if (savedStockTab === 'api') {
+      loadStocksData();
+    }
   } else {
     transactionsTab.style.display = 'block';
     debtsTab.style.display = 'none';
+    stocksTab.style.display = 'none';
     btnTransactions.classList.add('active');
     btnDebts.classList.remove('active');
+    btnStocks.classList.remove('active');
     localStorage.setItem('cashActiveTab', 'transactions');
   }
 }
@@ -2613,6 +2790,9 @@ function loadBusinesses() {
     if (!data.success) throw new Error(data.error || 'Ошибка загрузки магазинов');
     businesses = data.businesses || [];
     updateCashBusinessOptions();
+    updateStocksBusinessButton();
+    renderStocksBusinessMenu();
+    loadStocksData();
   })
   .catch(() => {
     businesses = [];
@@ -3320,6 +3500,234 @@ function switchDebtSubTab(tab) {
   localStorage.setItem('activeDebtSubTab', tab);
 }
 
+function switchCashStockSubTab(tab) {
+  const tabs = document.querySelectorAll('.cash-stock-sub-tab');
+  const apiTab = document.getElementById('cashStocksApiTab');
+  const localTab = document.getElementById('cashStocksLocalTab');
+
+  if (!tabs.length || !apiTab || !localTab) return;
+
+  tabs.forEach(t => t.classList.remove('active'));
+
+  if (tab === 'local') {
+    tabs[1].classList.add('active');
+    apiTab.style.display = 'none';
+    localTab.style.display = 'block';
+  } else {
+    tabs[0].classList.add('active');
+    apiTab.style.display = 'block';
+    localTab.style.display = 'none';
+  }
+
+  localStorage.setItem('activeStockSubTab', tab);
+  if (tab === 'api') {
+    loadStocksData();
+  }
+}
+
+function loadStocksData() {
+  const body = document.getElementById('cashStocksBody');
+  const countEl = document.getElementById('cashStocksCount');
+  const activeTab = localStorage.getItem('cashActiveTab');
+  const activeSubTab = localStorage.getItem('activeStockSubTab') || 'api';
+
+  if (!body || activeTab !== 'stocks' || activeSubTab !== 'api') return;
+
+  const selectedIds = getSelectedStockBusinessIds();
+  const availableIds = businesses.filter(b => b.wb_api_key).map(b => b.id);
+  const ids = (selectedIds && selectedIds.length) ? selectedIds : availableIds;
+
+  if (!ids.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет магазинов с API ключом</td></tr>';
+    if (countEl) countEl.textContent = '0';
+    return;
+  }
+
+  body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>';
+  if (countEl) countEl.textContent = '0';
+
+  const query = encodeURIComponent(ids.join(','));
+  fetch('/api/wb-stocks?businessIds=' + query, {
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(res => res.json())
+  .then(async data => {
+    if (!data.success) throw new Error(data.error || 'Ошибка загрузки остатков');
+    cashStocksItems = data.items || [];
+
+    const uniqueBusinessIds = Array.from(new Set(cashStocksItems.map(it => it.business_id))).filter(Boolean);
+    cashStocksCosts = await loadStocksCosts(uniqueBusinessIds);
+    renderStocksTable();
+  })
+  .catch(err => {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Ошибка: ' + escapeHtml(err.message) + '</td></tr>';
+    if (countEl) countEl.textContent = '0';
+  });
+}
+
+async function loadStocksCosts(businessIds) {
+  const costMap = {};
+  if (!businessIds || !businessIds.length) return costMap;
+
+  await Promise.all(businessIds.map(id => {
+    return fetch('/api/product-costs/' + id, {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (!data.success || !Array.isArray(data.costs)) return;
+      data.costs.forEach(item => {
+        const key = String(id) + ':' + String(item.nm_id);
+        costMap[key] = Number(item.cost || 0);
+      });
+    })
+    .catch(() => {});
+  }));
+
+  return costMap;
+}
+
+function renderStocksTable() {
+  const body = document.getElementById('cashStocksBody');
+  const countEl = document.getElementById('cashStocksCount');
+  if (!body) return;
+
+  if (!cashStocksItems.length) {
+    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет данных</td></tr>';
+    if (countEl) countEl.textContent = '0';
+    return;
+  }
+
+  const rows = cashStocksItems.map(item => {
+    const business = businesses.find(b => b.id === item.business_id);
+    const businessName = business ? business.company_name : '—';
+    const nmId = item.nm_id || '—';
+    const brand = item.brand || '—';
+    const subject = item.subject || '—';
+    const qty = Number(item.qty || 0);
+    const inWayToClient = Number(item.in_way_to_client || 0);
+    const inWayFromClient = Number(item.in_way_from_client || 0);
+    const totalQty = Number(item.total_qty || 0);
+    const costKey = String(item.business_id) + ':' + String(item.nm_id);
+    const costValue = (costKey in cashStocksCosts) ? cashStocksCosts[costKey] : null;
+    const sumValue = (costValue !== null) ? totalQty * Number(costValue || 0) : null;
+
+    return '<tr>' +
+      '<td>' + escapeHtml(businessName) + '</td>' +
+      '<td>' + escapeHtml(brand) + '</td>' +
+      '<td>' + escapeHtml(subject) + '</td>' +
+      '<td>' + escapeHtml(nmId) + '</td>' +
+      '<td style="text-align:right">' + formatQty(qty) + '</td>' +
+      '<td style="text-align:right">' + formatQty(inWayToClient) + '</td>' +
+      '<td style="text-align:right">' + formatQty(inWayFromClient) + '</td>' +
+      '<td style="text-align:right">' + formatQty(totalQty) + '</td>' +
+      '<td style="text-align:right">' + (costValue !== null ? formatMoney(costValue) : '—') + '</td>' +
+      '<td style="text-align:right">' + (sumValue !== null ? formatMoney(sumValue) : '—') + '</td>' +
+    '</tr>';
+  });
+
+  body.innerHTML = rows.join('');
+  if (countEl) countEl.textContent = String(cashStocksItems.length);
+}
+
+function getSelectedStockBusinessIds() {
+  const raw = localStorage.getItem('cashStocksBusinessIds');
+  if (!raw) return null;
+  try {
+    const ids = JSON.parse(raw).map(id => parseInt(id, 10)).filter(Boolean);
+    return ids.length ? ids : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function setSelectedStockBusinessIds(ids) {
+  if (!ids || !ids.length || (businesses.length && ids.length >= businesses.length)) {
+    localStorage.removeItem('cashStocksBusinessIds');
+  } else {
+    localStorage.setItem('cashStocksBusinessIds', JSON.stringify(ids));
+  }
+  updateStocksBusinessButton();
+  renderStocksBusinessMenu();
+}
+
+function updateStocksBusinessButton() {
+  const btn = document.getElementById('cashStocksBusinessBtn');
+  if (!btn) return;
+  if (!businesses.length) {
+    btn.textContent = 'Магазины: нет';
+    return;
+  }
+  const selected = getSelectedStockBusinessIds();
+  if (!selected || selected.length >= businesses.length) {
+    btn.textContent = 'Все магазины';
+    return;
+  }
+  if (selected.length === 1) {
+    const found = businesses.find(b => b.id === selected[0]);
+    btn.textContent = found ? found.company_name : '1 магазин';
+    return;
+  }
+  btn.textContent = 'Магазинов: ' + selected.length;
+}
+
+function renderStocksBusinessMenu() {
+  const menu = document.getElementById('cashStocksBusinessMenu');
+  if (!menu) return;
+
+  if (!businesses.length) {
+    menu.innerHTML = '<div class="filter-item">Нет магазинов</div>';
+    return;
+  }
+
+  const selected = getSelectedStockBusinessIds();
+  const allIds = businesses.map(b => b.id);
+  const allSelected = !selected || selected.length >= allIds.length;
+  const activeIds = selected || allIds;
+
+  const items = [];
+  items.push('<div class="filter-item ' + (allSelected ? 'active' : '') + '" onclick="event.stopPropagation(); toggleStockBusinessAll()">Все магазины</div>');
+  businesses.forEach(b => {
+    const isActive = !allSelected && activeIds.includes(b.id);
+    items.push('<div class="filter-item ' + (isActive ? 'active' : '') + '" onclick="event.stopPropagation(); toggleStockBusiness(' + b.id + ')">' + b.company_name + '</div>');
+  });
+  menu.innerHTML = items.join('');
+}
+
+function toggleStockBusinessAll() {
+  setSelectedStockBusinessIds(null);
+  loadStocksData();
+}
+
+function toggleStockBusiness(id) {
+  let ids = getSelectedStockBusinessIds();
+  if (!ids || !ids.length) {
+    ids = businesses.map(b => b.id);
+  }
+  const index = ids.indexOf(id);
+  if (index >= 0) {
+    ids.splice(index, 1);
+  } else {
+    ids.push(id);
+  }
+  if (!ids.length) {
+    setSelectedStockBusinessIds(null);
+  } else {
+    setSelectedStockBusinessIds(ids);
+  }
+  loadStocksData();
+}
+
+function toggleStocksBusinessMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('cashStocksBusinessMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  if (opMenu) opMenu.classList.remove('open');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
 function loadCashDebts() {
   fetch('/api/cash/debts', {
     headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
@@ -3673,11 +4081,17 @@ function setDebtTypeFilter(value) {
   renderCashDebts();
 }
 
-document.addEventListener('click', () => {
+document.addEventListener('click', (event) => {
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const stocksMenu = document.getElementById('cashStocksBusinessMenu');
+  const stocksBtn = document.getElementById('cashStocksBusinessBtn');
+  if (stocksMenu && (stocksMenu.contains(event.target) || (stocksBtn && stocksBtn.contains(event.target)))) {
+    return;
+  }
   if (opMenu) opMenu.classList.remove('open');
   if (typeMenu) typeMenu.classList.remove('open');
+  if (stocksMenu) stocksMenu.classList.remove('open');
 });
 
 function applyDebtOperationsFilters(items) {
@@ -4009,6 +4423,10 @@ if (savedTab === 'debts') {
   const savedDebtTab = localStorage.getItem('activeDebtSubTab') || 'summary';
   switchDebtSubTab(savedDebtTab);
 }
+if (savedTab === 'stocks') {
+  const savedStockTab = localStorage.getItem('activeStockSubTab') || 'api';
+  switchCashStockSubTab(savedStockTab);
+}
 </script>
 </body></html>`);
 });
@@ -4131,7 +4549,7 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
             <option value="">Загрузка...</option>
           </select>
         </div>
-        <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/login'">🚪 Выход</button>
+        <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
       </div>
     </div>
     <div style="display:flex;gap:12px;align-items:center">
@@ -5095,19 +5513,37 @@ function closeCashflowModal() {
 function switchCashTab(tab) {
   const transactionsTab = document.getElementById('cashflowTransactionsTab');
   const debtsTab = document.getElementById('cashflowDebtsTab');
+  const stocksTab = document.getElementById('cashflowStocksTab');
   const btnTransactions = document.getElementById('cashTabTransactions');
   const btnDebts = document.getElementById('cashTabDebts');
+  const btnStocks = document.getElementById('cashTabStocks');
 
   if (tab === 'debts') {
     transactionsTab.style.display = 'none';
     debtsTab.style.display = 'block';
+    stocksTab.style.display = 'none';
     btnTransactions.classList.remove('active');
     btnDebts.classList.add('active');
+    btnStocks.classList.remove('active');
+  } else if (tab === 'stocks') {
+    transactionsTab.style.display = 'none';
+    debtsTab.style.display = 'none';
+    stocksTab.style.display = 'block';
+    btnTransactions.classList.remove('active');
+    btnDebts.classList.remove('active');
+    btnStocks.classList.add('active');
+    const savedStockTab = localStorage.getItem('activeStockSubTab') || 'api';
+    switchCashStockSubTab(savedStockTab);
+    if (savedStockTab === 'api') {
+      loadStocksData();
+    }
   } else {
     transactionsTab.style.display = 'block';
     debtsTab.style.display = 'none';
+    stocksTab.style.display = 'none';
     btnTransactions.classList.add('active');
     btnDebts.classList.remove('active');
+    btnStocks.classList.remove('active');
   }
 }
 
