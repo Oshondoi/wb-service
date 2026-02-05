@@ -102,6 +102,12 @@ app.get('/login', (req, res) => {
 <title>Вход - WB Helper</title>
 <style>
 *{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 600px at 10% -10%,#7f8cff 0%,rgba(127,140,255,0) 60%),radial-gradient(900px 500px at 90% 0%,#3b82f6 0%,rgba(59,130,246,0) 55%),#0f172a;color:#e2e8f0;position:relative}
 body::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0));pointer-events:none}
 .login-box{background:rgba(15,23,42,0.85);backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,0.2);border-radius:24px;padding:44px 40px;box-shadow:0 30px 80px rgba(0,0,0,0.45);width:100%;max-width:430px;position:relative;z-index:1;animation:slideUp 0.6s cubic-bezier(0.16,1,0.3,1)}
@@ -647,6 +653,79 @@ app.post('/api/cash/debts', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/cash/debts/recalculate', requireAuth, async (req, res) => {
+  const { counterparty, business_id, amount, debt_date, note } = req.body;
+
+  if (!counterparty || !String(counterparty).trim()) {
+    return res.json({ success: false, error: 'Контрагент не указан' });
+  }
+
+  if (business_id) {
+    const isOwner = await db.verifyBusinessOwnership(parseInt(business_id), req.account.id);
+    if (!isOwner) {
+      return res.json({ success: false, error: 'Доступ запрещён' });
+    }
+  }
+
+  try {
+    const receivableGroup = await db.findOpenDebtGroup(req.account.id, counterparty, 'receivable', business_id ? parseInt(business_id) : null);
+    const payableGroup = await db.findOpenDebtGroup(req.account.id, counterparty, 'payable', business_id ? parseInt(business_id) : null);
+
+    if (!receivableGroup || !payableGroup) {
+      return res.json({ success: false, error: 'Для перерасчёта нужны оба типа долга' });
+    }
+
+    const receivableBalance = Math.abs(Number(receivableGroup.balance || 0));
+    const payableBalance = Math.abs(Number(payableGroup.balance || 0));
+    const maxAmount = Math.min(receivableBalance, payableBalance);
+
+    if (!maxAmount || maxAmount <= 0.01) {
+      return res.json({ success: false, error: 'Нет суммы для перерасчёта' });
+    }
+
+    const requestedAmount = amount ? Number(amount) : maxAmount;
+    if (!requestedAmount || requestedAmount <= 0) {
+      return res.json({ success: false, error: 'Сумма должна быть больше 0' });
+    }
+    if (requestedAmount - maxAmount > 0.01) {
+      return res.json({ success: false, error: 'Сумма превышает доступный максимум' });
+    }
+
+    const finalNote = note && String(note).trim() ? String(note).trim() : 'Взаимозачёт';
+    const offsetAmount = -Math.abs(requestedAmount);
+
+    const receivableItem = await db.createCashDebt(req.account.id, {
+      debt_date: debt_date || null,
+      debt_type: 'receivable',
+      amount: offsetAmount,
+      counterparty,
+      due_date: null,
+      status: 'open',
+      note: finalNote,
+      business_id: business_id ? parseInt(business_id) : null,
+      operation_type: 'decrease',
+      debt_group_id: receivableGroup.debt_group_id
+    });
+
+    const payableItem = await db.createCashDebt(req.account.id, {
+      debt_date: debt_date || null,
+      debt_type: 'payable',
+      amount: offsetAmount,
+      counterparty,
+      due_date: null,
+      status: 'open',
+      note: finalNote,
+      business_id: business_id ? parseInt(business_id) : null,
+      operation_type: 'decrease',
+      debt_group_id: payableGroup.debt_group_id
+    });
+
+    return res.json({ success: true, items: [receivableItem, payableItem], amount: Math.abs(offsetAmount) });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
 app.put('/api/cash/debts/:id', requireAuth, async (req, res) => {
   const debtId = parseInt(req.params.id);
   const updates = { ...req.body };
@@ -1132,6 +1211,12 @@ app.get('/products', requireAuth, (req, res) => {
 <title>WB Helper MAX - Анализ товаров</title>
 <style>
 *{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 .container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
@@ -1782,6 +1867,12 @@ app.get('/', requireAuth, (req, res) => {
 <title>WB Helper - Движение денег</title>
 <style>
 *{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
 .container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
@@ -1935,7 +2026,7 @@ input[type=number]{-moz-appearance:textfield}
   <div class="cash-tabs">
     <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
     <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
-    <button id="cashTabStocks" class="cash-tab-btn" onclick="switchCashTab('stocks')">Остатки</button>
+    <button id="cashTabStocks" class="cash-tab-btn" onclick="switchCashTab('stocks')">Запасы</button>
   </div>
 
   <div id="cashflowTransactionsTab">
@@ -1978,7 +2069,7 @@ input[type=number]{-moz-appearance:textfield}
   <div id="cashflowDebtsTab" style="display:none">
     <!-- Подвкладки -->
     <div class="cash-sub-tabs">
-      <button class="cash-sub-tab cash-debt-sub-tab active" onclick="switchDebtSubTab('summary')">Список долгов</button>
+      <button class="cash-sub-tab cash-debt-sub-tab active" onclick="switchDebtSubTab('summary')">Список контрагентов</button>
       <button class="cash-sub-tab cash-debt-sub-tab" onclick="switchDebtSubTab('operations')">Записи</button>
     </div>
 
@@ -2063,9 +2154,13 @@ input[type=number]{-moz-appearance:textfield}
   </div>
 
   <div id="cashflowStocksTab" style="display:none">
-    <div class="cash-sub-tabs" style="margin-top:8px">
-      <button class="cash-sub-tab cash-stock-sub-tab active" onclick="switchCashStockSubTab('api')">По API ключам</button>
-      <button class="cash-sub-tab cash-stock-sub-tab" onclick="switchCashStockSubTab('local')">У себя на складе</button>
+    <div class="cash-sub-tabs" style="margin-top:8px;flex-wrap:wrap;row-gap:6px">
+      <button class="cash-sub-tab cash-stock-sub-tab active" data-tab="api" onclick="switchCashStockSubTab('api')">По API ключам</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" data-tab="local" onclick="switchCashStockSubTab('local')">У себя на складе</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" data-tab="production" onclick="switchCashStockSubTab('production')">В производстве</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" data-tab="procurement" onclick="switchCashStockSubTab('procurement')">Закупки</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" data-tab="logistics" onclick="switchCashStockSubTab('logistics')">В логистике</button>
+      <button class="cash-sub-tab cash-stock-sub-tab" data-tab="outsourcing" onclick="switchCashStockSubTab('outsourcing')">Аутсорс услуги</button>
     </div>
 
     <div id="cashStocksApiTab">
@@ -2127,6 +2222,106 @@ input[type=number]{-moz-appearance:textfield}
         </table>
       </div>
     </div>
+    <div id="cashStocksProductionTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksProductionCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <button class="api-btn" style="padding:6px 10px" disabled>Добавить позицию</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Наименование</th>
+              <th>Комментарий</th>
+              <th style="text-align:right">Количество</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" class="cash-muted" style="text-align:center;padding:16px">Раздел в разработке</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="cashStocksProcurementTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksProcurementCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <button class="api-btn" style="padding:6px 10px" disabled>Добавить позицию</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Наименование</th>
+              <th>Комментарий</th>
+              <th style="text-align:right">Количество</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" class="cash-muted" style="text-align:center;padding:16px">Раздел в разработке</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="cashStocksLogisticsTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksLogisticsCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <button class="api-btn" style="padding:6px 10px" disabled>Добавить позицию</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Наименование</th>
+              <th>Комментарий</th>
+              <th style="text-align:right">Количество</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" class="cash-muted" style="text-align:center;padding:16px">Раздел в разработке</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div id="cashStocksOutsourcingTab" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 10px 0">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="cash-muted selected-count" style="font-size:12px">Позиции: <span id="cashStocksOutsourcingCount">0</span></div>
+          <button class="api-btn primary" style="padding:6px 10px" onclick="openCostModal()">💰 Себестоимость</button>
+          <button class="api-btn" style="padding:6px 10px" disabled>Добавить позицию</button>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow:auto">
+        <table class="cash-table">
+          <thead>
+            <tr>
+              <th>Наименование</th>
+              <th>Комментарий</th>
+              <th style="text-align:right">Количество</th>
+              <th style="text-align:right">Себестоимость</th>
+              <th style="text-align:right">Сумма</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="5" class="cash-muted" style="text-align:center;padding:16px">Раздел в разработке</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2156,6 +2351,60 @@ input[type=number]{-moz-appearance:textfield}
             <tr><td colspan="8" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Модалка: перерасчёт долгов -->
+<div id="debtRecalcModal" class="modal" onclick="closeDebtRecalcModal()">
+  <div class="modal-content" style="max-width:720px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>↔ Перерасчёт долгов</h2>
+      <button class="close-btn" onclick="closeDebtRecalcModal()">&times;</button>
+    </div>
+    <div class="cash-form" style="margin-bottom:0">
+      <div class="cash-form-row two-col">
+        <div>
+          <div class="cash-label">Контрагент</div>
+          <div id="debtRecalcCounterparty" class="cash-input" style="display:flex;align-items:center">—</div>
+        </div>
+        <div>
+          <div class="cash-label">Магазин</div>
+          <div id="debtRecalcBusiness" class="cash-input" style="display:flex;align-items:center">—</div>
+        </div>
+        <div>
+          <div class="cash-label">Нам должны</div>
+          <div id="debtRecalcReceivable" class="cash-input" style="display:flex;align-items:center">—</div>
+        </div>
+        <div>
+          <div class="cash-label">Мы должны</div>
+          <div id="debtRecalcPayable" class="cash-input" style="display:flex;align-items:center">—</div>
+        </div>
+      </div>
+      <div class="cash-form-row" style="margin-top:12px">
+        <div>
+          <div class="cash-label">Сумма перерасчёта</div>
+          <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:#cbd5f5">
+            <input id="debtRecalcAuto" type="checkbox" onchange="toggleDebtRecalcAuto()" />
+            Авто‑перерасчёт (максимум)
+          </label>
+          <input id="debtRecalcAmount" type="number" min="0" step="0.01" class="cash-input" placeholder="Автоматически" oninput="updateDebtRecalcPreview()" />
+          <div class="cash-muted" style="margin-top:6px">Максимум: <span id="debtRecalcMax">—</span></div>
+          <div class="cash-muted" style="margin-top:6px">После перерасчёта: нам должны — <span id="debtRecalcAfterReceivable">—</span>, мы должны — <span id="debtRecalcAfterPayable">—</span></div>
+        </div>
+        <div>
+          <div class="cash-label">Дата</div>
+          <input id="debtRecalcDate" type="date" class="cash-input" />
+        </div>
+        <div>
+          <div class="cash-label">Комментарий</div>
+          <input id="debtRecalcNote" type="text" class="cash-input" placeholder="Взаимозачёт" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="api-btn" onclick="closeDebtRecalcModal()">Отмена</button>
+        <button class="cash-action-btn" onclick="submitDebtRecalc()">Перерасчитать</button>
       </div>
     </div>
   </div>
@@ -2444,6 +2693,8 @@ input[type=number]{-moz-appearance:textfield}
 let businesses = [];
 let cashTransactions = [];
 let cashDebts = [];
+let debtSummaryIndex = {};
+let currentDebtRecalc = null;
 let counterparties = [];
 let cashCategories = [];
 let pendingBusinesses = [];
@@ -3502,25 +3753,34 @@ function switchDebtSubTab(tab) {
 
 function switchCashStockSubTab(tab) {
   const tabs = document.querySelectorAll('.cash-stock-sub-tab');
-  const apiTab = document.getElementById('cashStocksApiTab');
-  const localTab = document.getElementById('cashStocksLocalTab');
+  const tabMap = {
+    api: 'cashStocksApiTab',
+    local: 'cashStocksLocalTab',
+    production: 'cashStocksProductionTab',
+    procurement: 'cashStocksProcurementTab',
+    logistics: 'cashStocksLogisticsTab',
+    outsourcing: 'cashStocksOutsourcingTab'
+  };
 
-  if (!tabs.length || !apiTab || !localTab) return;
+  if (!tabs.length) return;
+
+  const safeTab = tabMap[tab] ? tab : 'api';
 
   tabs.forEach(t => t.classList.remove('active'));
+  tabs.forEach(t => {
+    if (t.dataset && t.dataset.tab === safeTab) t.classList.add('active');
+  });
 
-  if (tab === 'local') {
-    tabs[1].classList.add('active');
-    apiTab.style.display = 'none';
-    localTab.style.display = 'block';
-  } else {
-    tabs[0].classList.add('active');
-    apiTab.style.display = 'block';
-    localTab.style.display = 'none';
-  }
+  Object.values(tabMap).forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
 
-  localStorage.setItem('activeStockSubTab', tab);
-  if (tab === 'api') {
+  const activeEl = document.getElementById(tabMap[safeTab]);
+  if (activeEl) activeEl.style.display = 'block';
+
+  localStorage.setItem('activeStockSubTab', safeTab);
+  if (safeTab === 'api') {
     loadStocksData();
   }
 }
@@ -3754,6 +4014,12 @@ function loadCashDebts() {
   });
 }
 
+function getDebtSummaryKey(counterparty, businessId) {
+  const name = counterparty || 'Без контрагента';
+  const biz = businessId ? String(businessId) : 'null';
+  return name + '||' + biz;
+}
+
 function renderDebtSummary() {
   const body = document.getElementById('debtSummaryBody');
   if (!body) return;
@@ -3798,6 +4064,18 @@ function renderDebtSummary() {
       percent
     };
   });
+
+  const nextSummaryIndex = {};
+  summaries.forEach(item => {
+    const key = getDebtSummaryKey(item.counterparty, item.business_id);
+    if (!nextSummaryIndex[key]) nextSummaryIndex[key] = {};
+    if (item.remainder <= 0.01) return;
+    const existing = nextSummaryIndex[key][item.debt_type];
+    if (!existing || Number(existing.remainder || 0) < Number(item.remainder || 0)) {
+      nextSummaryIndex[key][item.debt_type] = item;
+    }
+  });
+  debtSummaryIndex = nextSummaryIndex;
   
   // Сортировка: 1) открытые выше, 2) по проценту выполнения (больше = выше)
   summaries.sort((a, b) => {
@@ -3821,6 +4099,15 @@ function renderDebtSummary() {
     const counterpartyEncoded = encodeURIComponent(item.counterparty || '—');
     const businessName = getBusinessNameById(item.business_id);
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
+    const key = getDebtSummaryKey(item.counterparty, item.business_id);
+    const keyEncoded = encodeURIComponent(key);
+    const oppositeType = item.debt_type === 'receivable' ? 'payable' : 'receivable';
+    const pair = debtSummaryIndex[key] || {};
+    const oppositeItem = pair[oppositeType];
+    const canRecalc = !item.isClosed && oppositeItem && Number(oppositeItem.remainder || 0) > 0.01;
+    const recalcTitle = canRecalc ? 'Перерасчёт' : 'Перерасчёт доступен только при двух открытых типах долга';
+    const recalcStyle = canRecalc ? '' : 'opacity:0.4;cursor:not-allowed;';
+    const recalcOnclick = canRecalc ? "openDebtRecalcModal('" + keyEncoded + "')" : 'return false;';
     
     // Прогресс-бар
     const percent = item.total_amount > 0 ? Math.max(0, Math.min(100, Math.round((item.paid_amount / item.total_amount) * 100))) : 0;
@@ -3843,6 +4130,9 @@ function renderDebtSummary() {
       '<td><strong>' + formatMoney(item.remainder) + '</strong></td>' +
       '<td><span style="color:' + statusColor + '">' + statusIcon + ' ' + item.statusLabel + '</span></td>' +
       '<td style="text-align:right;display:flex;justify-content:flex-end;gap:6px">' +
+      '<button class="api-btn" style="padding:6px 8px;line-height:0;' + recalcStyle + '" title="' + recalcTitle + '" onclick="' + recalcOnclick + '">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h18"/><path d="M7 8l-4 4 4 4"/><path d="M17 16l4-4-4-4"/></svg>' +
+      '</button>' +
       '<button class="api-btn" style="padding:6px 8px;line-height:0" title="Детали" onclick="openDebtOperationsModal(\\\'' + item.group_id + '\\\')">' +
         '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>' +
       '</button>' +
@@ -3979,6 +4269,160 @@ function openDebtOperationsModal(groupId) {
 function closeDebtOperationsModal() {
   const modal = document.getElementById('debtOperationsModal');
   if (modal) modal.classList.remove('active');
+}
+
+function openDebtRecalcModal(keyEncoded) {
+  const key = decodeURIComponent(keyEncoded || '');
+  const pair = debtSummaryIndex[key];
+  if (!pair || !pair.receivable || !pair.payable) {
+    alert('❌ Для перерасчёта нужны оба типа долга');
+    return;
+  }
+
+  const receivable = pair.receivable;
+  const payable = pair.payable;
+  const receivableRemainder = Math.max(0, Number(receivable.remainder || 0));
+  const payableRemainder = Math.max(0, Number(payable.remainder || 0));
+  const maxAmount = Math.min(receivableRemainder, payableRemainder);
+
+  if (!maxAmount || maxAmount <= 0.01) {
+    alert('❌ Нет суммы для перерасчёта');
+    return;
+  }
+
+  const modal = document.getElementById('debtRecalcModal');
+  const counterpartyEl = document.getElementById('debtRecalcCounterparty');
+  const businessEl = document.getElementById('debtRecalcBusiness');
+  const receivableEl = document.getElementById('debtRecalcReceivable');
+  const payableEl = document.getElementById('debtRecalcPayable');
+  const maxEl = document.getElementById('debtRecalcMax');
+  const amountInput = document.getElementById('debtRecalcAmount');
+  const dateInput = document.getElementById('debtRecalcDate');
+  const noteInput = document.getElementById('debtRecalcNote');
+
+  const counterpartyName = receivable.counterparty || payable.counterparty || '—';
+  const businessId = receivable.business_id || payable.business_id || null;
+  const businessName = getBusinessNameById(businessId);
+
+  if (counterpartyEl) counterpartyEl.textContent = counterpartyName;
+  if (businessEl) businessEl.textContent = businessName || '—';
+  if (receivableEl) receivableEl.textContent = formatMoney(receivableRemainder);
+  if (payableEl) payableEl.textContent = formatMoney(payableRemainder);
+  if (maxEl) maxEl.textContent = formatMoney(maxAmount);
+
+  if (amountInput) {
+    amountInput.value = '';
+    amountInput.placeholder = 'Автоматически: ' + formatMoney(maxAmount);
+  }
+  const autoInput = document.getElementById('debtRecalcAuto');
+  if (autoInput) autoInput.checked = false;
+
+  toggleDebtRecalcAuto();
+  if (dateInput) {
+    dateInput.value = new Date().toISOString().split('T')[0];
+  }
+  if (noteInput) noteInput.value = '';
+
+  currentDebtRecalc = {
+    counterparty: counterpartyName,
+    business_id: businessId,
+    maxAmount,
+    receivableRemainder,
+    payableRemainder
+  };
+
+  updateDebtRecalcPreview();
+
+  if (modal) modal.classList.add('active');
+}
+
+function closeDebtRecalcModal() {
+  const modal = document.getElementById('debtRecalcModal');
+  if (modal) modal.classList.remove('active');
+  currentDebtRecalc = null;
+}
+
+function toggleDebtRecalcAuto() {
+  const autoInput = document.getElementById('debtRecalcAuto');
+  const amountInput = document.getElementById('debtRecalcAmount');
+  const isAuto = autoInput ? autoInput.checked : true;
+  if (amountInput) {
+    amountInput.disabled = isAuto;
+    amountInput.style.opacity = isAuto ? '0.7' : '1';
+    if (isAuto) {
+      amountInput.value = currentDebtRecalc ? String(currentDebtRecalc.maxAmount || '') : '';
+    } else {
+      amountInput.value = '';
+    }
+  }
+  updateDebtRecalcPreview();
+}
+
+function updateDebtRecalcPreview() {
+  if (!currentDebtRecalc) return;
+  const amountInput = document.getElementById('debtRecalcAmount');
+  const autoInput = document.getElementById('debtRecalcAuto');
+  const afterReceivableEl = document.getElementById('debtRecalcAfterReceivable');
+  const afterPayableEl = document.getElementById('debtRecalcAfterPayable');
+
+  const isAuto = autoInput ? autoInput.checked : true;
+  const rawAmount = amountInput ? amountInput.value.trim() : '';
+  const requestedAmount = isAuto ? currentDebtRecalc.maxAmount : (rawAmount ? Number(rawAmount) : 0);
+  const safeAmount = (!requestedAmount || requestedAmount <= 0) ? 0 : requestedAmount;
+
+  const receivableAfter = Math.max(0, currentDebtRecalc.receivableRemainder - safeAmount);
+  const payableAfter = Math.max(0, currentDebtRecalc.payableRemainder - safeAmount);
+
+  if (afterReceivableEl) afterReceivableEl.textContent = formatMoney(receivableAfter);
+  if (afterPayableEl) afterPayableEl.textContent = formatMoney(payableAfter);
+}
+
+async function submitDebtRecalc() {
+  if (!currentDebtRecalc) return;
+
+  const amountInput = document.getElementById('debtRecalcAmount');
+  const autoInput = document.getElementById('debtRecalcAuto');
+  const dateInput = document.getElementById('debtRecalcDate');
+  const noteInput = document.getElementById('debtRecalcNote');
+
+  const isAuto = autoInput ? autoInput.checked : true;
+  const rawAmount = amountInput ? amountInput.value.trim() : '';
+  const requestedAmount = isAuto ? currentDebtRecalc.maxAmount : (rawAmount ? Number(rawAmount) : 0);
+
+  if (!requestedAmount || requestedAmount <= 0) {
+    alert('❌ Укажите сумму перерасчёта');
+    return;
+  }
+
+  if (requestedAmount - currentDebtRecalc.maxAmount > 0.01) {
+    alert('❌ Сумма превышает доступный максимум');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/cash/debts/recalculate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({
+        counterparty: currentDebtRecalc.counterparty,
+        business_id: currentDebtRecalc.business_id,
+        amount: requestedAmount,
+        debt_date: dateInput ? dateInput.value || null : null,
+        note: noteInput ? noteInput.value.trim() : null
+      })
+    });
+
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || 'Ошибка перерасчёта');
+
+    closeDebtRecalcModal();
+    loadCashDebts();
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
 }
 
 function openCashTransactionModal() {
@@ -4438,6 +4882,12 @@ app.get('/fin-report', requireAuth, (req, res) => {
 <title>WB Helper - Финансовый отчет</title>
 <style>
 *{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
 .container{width:100%;max-width:1500px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}

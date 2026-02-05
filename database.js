@@ -401,6 +401,91 @@ async function deleteProductCost(businessId, nmId) {
   return !error;
 }
 
+// ==================== ГРУППЫ ТОВАРОВ ====================
+
+function normalizeProductGroupName(name) {
+  if (!name) return null;
+  const normalized = String(name).trim().replace(/\s+/g, ' ');
+  return normalized.length ? normalized : null;
+}
+
+async function getProductGroups(accountId) {
+  const { data, error } = await supabase
+    .from('product_groups')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('created_at', { ascending: false });
+
+  return error ? [] : data;
+}
+
+async function createProductGroup(accountId, name) {
+  const normalized = normalizeProductGroupName(name);
+  if (!normalized) return null;
+
+  const payload = {
+    account_id: accountId,
+    name: normalized,
+    name_normalized: normalized.toLowerCase()
+  };
+
+  const { data, error } = await supabase
+    .from('product_groups')
+    .upsert(payload, { onConflict: 'account_id,name_normalized' })
+    .select()
+    .single();
+
+  if (error) {
+    const { data: existing, error: fetchError } = await supabase
+      .from('product_groups')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('name_normalized', payload.name_normalized)
+      .single();
+    if (fetchError) throw error;
+    return existing;
+  }
+
+  return data;
+}
+
+async function verifyProductGroupOwnership(groupId, accountId) {
+  const { data, error } = await supabase
+    .from('product_groups')
+    .select('id')
+    .eq('id', groupId)
+    .eq('account_id', accountId)
+    .single();
+
+  return !error && !!data;
+}
+
+async function getProductGroupItems(groupId) {
+  const { data, error } = await supabase
+    .from('product_group_items')
+    .select('*')
+    .eq('group_id', groupId)
+    .order('created_at', { ascending: false });
+
+  return error ? [] : data;
+}
+
+async function addProductGroupItem(groupId, nmId) {
+  const payload = {
+    group_id: groupId,
+    nm_id: String(nmId).trim()
+  };
+
+  const { data, error } = await supabase
+    .from('product_group_items')
+    .upsert(payload, { onConflict: 'group_id,nm_id' })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 // ==================== КОНТРАГЕНТЫ ====================
 
 function normalizeCounterpartyName(name) {
@@ -1047,6 +1132,12 @@ module.exports = {
   getProductCostsByBusiness,
   getProductCost,
   deleteProductCost,
+  // Группы товаров
+  getProductGroups,
+  createProductGroup,
+  verifyProductGroupOwnership,
+  getProductGroupItems,
+  addProductGroupItem,
   // Контрагенты
   upsertCounterparty,
   getCounterparties,

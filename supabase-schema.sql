@@ -41,6 +41,25 @@ CREATE TABLE IF NOT EXISTS product_costs (
   UNIQUE(business_id, nm_id)
 );
 
+-- 3.0 Таблицы групп товаров (по аккаунту)
+CREATE TABLE IF NOT EXISTS product_groups (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  name_normalized TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(account_id, name_normalized)
+);
+
+CREATE TABLE IF NOT EXISTS product_group_items (
+  id BIGSERIAL PRIMARY KEY,
+  group_id BIGINT NOT NULL REFERENCES product_groups(id) ON DELETE CASCADE,
+  nm_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(group_id, nm_id)
+);
+
 -- 3.1 Таблица движения денег (ДДС)
 CREATE TABLE IF NOT EXISTS cash_transactions (
   id BIGSERIAL PRIMARY KEY,
