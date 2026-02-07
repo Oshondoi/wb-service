@@ -7,7 +7,9 @@ const cookieParser = require('cookie-parser');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('./database');
+const supabase = require('./supabase-client');
 const syncService = require('./sync-service');
 
 const app = express();
@@ -50,56 +52,91 @@ const randomDelay = (minSec, maxSec) => {
   return delay(ms);
 };
 
-// Middleware для проверки авторизации через БД
-async function requireAuth(req, res, next) {
-  // Проверяем токен в cookie
-  const token = req.cookies?.authToken;
-  if (token) {
-    try {
-      const accountId = parseInt(token, 10);
-      const account = await db.getAccountById(accountId);
-      if (account) {
-        // Прикрепляем информацию об аккаунте к запросу
-        req.account = account;
-        return next();
-      }
-    } catch (e) {
-      // Невалидный токен
-    }
+function isLikelyJwt(token) {
+  return typeof token === 'string' && token.split('.').length === 3;
+}
+
+async function ensureAccountFromAuthUser(user) {
+  if (!user || !user.email) {
+    return null;
   }
-  
-  // Проверяем токен в заголовке Authorization (для API)
+
+  const existing = await db.getAccountByEmail(user.email);
+  if (existing) {
+    return existing;
+  }
+
+  const rawUsername = user.user_metadata && user.user_metadata.username
+    ? String(user.user_metadata.username)
+    : String(user.email).split('@')[0];
+  const baseUsername = rawUsername.trim() || 'user';
+  let candidate = baseUsername;
+  let suffix = 1;
+
+  while (await db.getAccountByUsername(candidate)) {
+    candidate = `${baseUsername}${suffix}`;
+    suffix += 1;
+  }
+
+  const randomPassword = crypto.randomBytes(16).toString('hex');
+  return db.createAccount(candidate, randomPassword, user.email);
+}
+
+async function getAccountFromAuthToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  if (isLikelyJwt(token)) {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data || !data.user) {
+      return null;
+    }
+    return ensureAccountFromAuthUser(data.user);
+  }
+
+  const accountId = parseInt(token, 10);
+  if (!Number.isNaN(accountId)) {
+    return db.getAccountById(accountId);
+  }
+
+  return null;
+}
+
+// Middleware для проверки авторизации через БД и Supabase Auth
+async function requireAuth(req, res, next) {
+  const token = req.cookies?.authToken;
+  const accountFromCookie = await getAccountFromAuthToken(token);
+  if (accountFromCookie) {
+    req.account = accountFromCookie;
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const bearerToken = authHeader.substring(7);
-    try {
-      const accountId = parseInt(bearerToken, 10);
-      const account = await db.getAccountById(accountId);
-      if (account) {
-        req.account = account;
-        return next();
-      }
-    } catch (e) {
-      // Невалидный токен
+    const accountFromHeader = await getAccountFromAuthToken(bearerToken);
+    if (accountFromHeader) {
+      req.account = accountFromHeader;
+      return next();
     }
   }
-  
-  // Для API запросов возвращаем JSON
+
   if (req.path.startsWith('/api/')) {
     return res.status(401).json({ success: false, error: 'Необходима авторизация' });
   }
-  
+
   res.redirect('/login');
 }
 
-// Страница входа
-app.get('/login', (req, res) => {
+// Страница авторизации (вход + регистрация)
+app.get('/auth', (req, res) => {
   if (req.session && req.session.isAuthenticated) {
     return res.redirect('/');
   }
   res.send(`<!doctype html>
 <html><head><meta charset="utf-8" />
-<title>Вход - WB Helper</title>
+<title>Вход - Elestet сервис</title>
 <style>
 *{box-sizing:border-box}
 html{overflow-y:scroll}
@@ -113,7 +150,11 @@ body::before{content:'';position:absolute;inset:0;background:linear-gradient(135
 .login-box{background:rgba(15,23,42,0.85);backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,0.2);border-radius:24px;padding:44px 40px;box-shadow:0 30px 80px rgba(0,0,0,0.45);width:100%;max-width:430px;position:relative;z-index:1;animation:slideUp 0.6s cubic-bezier(0.16,1,0.3,1)}
 @keyframes slideUp{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}
 .login-box h1{margin:0 0 12px;font-size:30px;font-weight:700;color:#f8fafc;text-align:center;letter-spacing:-0.4px}
-.login-box .subtitle{text-align:center;color:#cbd5f5;margin-bottom:34px;font-size:14px;font-weight:500}
+.login-box .subtitle{text-align:center;color:#cbd5f5;margin-bottom:22px;font-size:14px;font-weight:500}
+.tab-switch{display:flex;gap:10px;background:rgba(30,41,59,0.72);padding:8px;border-radius:14px;margin-bottom:24px;border:1px solid rgba(148,163,184,0.18)}
+.tab-switch button{flex:1;padding:10px 12px;border-radius:10px;background:transparent;color:#cbd5f5;box-shadow:none;font-size:13px;text-transform:uppercase;letter-spacing:0.4px;font-weight:700}
+.tab-switch button:hover{transform:none;box-shadow:none}
+.tab-switch button.active{background:linear-gradient(135deg,#22d3ee 0%,#3b82f6 100%);color:#0b1220;box-shadow:0 10px 25px rgba(59,130,246,0.35)}
 .form-group{margin-bottom:22px}
 label{display:block;margin-bottom:10px;font-weight:600;color:#e2e8f0;font-size:13px;letter-spacing:0.3px;text-transform:uppercase}
 input{width:100%;padding:14px 16px;border:1px solid rgba(148,163,184,0.35);border-radius:12px;font-size:15px;transition:all 0.25s;box-sizing:border-box;background:rgba(15,23,42,0.6);color:#e2e8f0}
@@ -123,25 +164,80 @@ button:hover{transform:translateY(-2px);box-shadow:0 16px 35px rgba(59,130,246,0
 button:active{transform:translateY(0)}
 .hint{font-size:12px;color:#93a4c7;margin-top:8px;font-weight:500}
 .error{background:linear-gradient(135deg,#ef4444 0%,#fb7185 100%);color:#fff;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:600;display:none;box-shadow:0 6px 16px rgba(239,68,68,0.35)}
+.success{background:linear-gradient(135deg,#22c55e 0%,#4ade80 100%);color:#0b1220;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:700;display:none;box-shadow:0 6px 16px rgba(34,197,94,0.35)}
+.auth-forms{min-height:380px;display:flex;flex-direction:column;justify-content:flex-start;position:relative}
+.auth-form{width:100%;position:absolute;top:0;left:0;opacity:0;transform:translateY(8px);transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none}
+.auth-form.active{opacity:1;transform:translateY(0);pointer-events:auto}
 </style></head><body>
 <div class="login-box">
-  <h1>🚀 WB Helper MAX</h1>
-  <p class="subtitle">Войдите для доступа к сервису</p>
+  <h1>🚀 Elestet сервис</h1>
+  <p id="subtitle" class="subtitle">Войдите для доступа к сервису</p>
+  <div class="tab-switch">
+    <button type="button" id="tabLogin" class="active">Вход</button>
+    <button type="button" id="tabRegister">Регистрация</button>
+  </div>
   <div id="error" class="error"></div>
-  <form id="loginForm">
-    <div class="form-group">
-      <label for="login">Логин</label>
-      <input type="text" id="login" name="login" required autocomplete="username" />
-    </div>
-    <div class="form-group">
-      <label for="password">Пароль</label>
-      <input type="password" id="password" name="password" required autocomplete="current-password" />
-      <div class="hint">Подсказка: посуда</div>
-    </div>
-    <button type="submit">Войти</button>
-  </form>
+  <div id="success" class="success"></div>
+  <div class="auth-forms">
+    <form id="loginForm" class="auth-form active">
+      <div class="form-group">
+        <label for="login">Email или логин</label>
+        <input type="text" id="login" name="login" required autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label for="password">Пароль</label>
+        <input type="password" id="password" name="password" required autocomplete="current-password" />
+        <div class="hint">Подсказка: посуда</div>
+      </div>
+      <button type="submit">Войти</button>
+    </form>
+    <form id="registerForm" class="auth-form">
+      <div class="form-group">
+        <label for="regUsername">Логин</label>
+        <input type="text" id="regUsername" name="regUsername" required autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label for="regEmail">Email</label>
+        <input type="email" id="regEmail" name="regEmail" required autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label for="regPassword">Пароль</label>
+        <input type="password" id="regPassword" name="regPassword" required autocomplete="new-password" />
+        <div class="hint">После регистрации подтвердите email</div>
+      </div>
+      <button type="submit">Зарегистрироваться</button>
+    </form>
+  </div>
 </div>
 <script>
+function setActiveTab(tab) {
+  var loginTab = document.getElementById('tabLogin');
+  var registerTab = document.getElementById('tabRegister');
+  var loginForm = document.getElementById('loginForm');
+  var registerForm = document.getElementById('registerForm');
+  var subtitle = document.getElementById('subtitle');
+  var err = document.getElementById('error');
+  var ok = document.getElementById('success');
+  var isLogin = tab === 'login';
+
+  loginTab.classList.toggle('active', isLogin);
+  registerTab.classList.toggle('active', !isLogin);
+  loginForm.classList.toggle('active', isLogin);
+  registerForm.classList.toggle('active', !isLogin);
+  subtitle.textContent = isLogin
+    ? 'Войдите для доступа к сервису'
+    : 'Создайте аккаунт для доступа к сервису';
+  err.style.display = 'none';
+  ok.style.display = 'none';
+}
+
+document.getElementById('tabLogin').onclick = function() {
+  setActiveTab('login');
+};
+document.getElementById('tabRegister').onclick = function() {
+  setActiveTab('register');
+};
+
 document.getElementById('loginForm').onsubmit = function(e) {
   e.preventDefault();
   var login = document.getElementById('login').value;
@@ -169,28 +265,91 @@ document.getElementById('loginForm').onsubmit = function(e) {
     err.style.display = 'block';
   });
 };
+
+document.getElementById('registerForm').onsubmit = function(e) {
+  e.preventDefault();
+  var username = document.getElementById('regUsername').value;
+  var email = document.getElementById('regEmail').value;
+  var password = document.getElementById('regPassword').value;
+  fetch('/api/register', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: username, email: email, password: password})
+  })
+  .then(function(r){return r.json();})
+  .then(function(data){
+    var err = document.getElementById('error');
+    var ok = document.getElementById('success');
+    if(data.success){
+      err.style.display = 'none';
+      ok.textContent = data.message || 'Регистрация успешна. Подтвердите email и войдите.';
+      ok.style.display = 'block';
+    } else {
+      ok.style.display = 'none';
+      err.textContent = data.message || 'Не удалось создать аккаунт';
+      err.style.display = 'block';
+    }
+  })
+  .catch(function(){
+    var err = document.getElementById('error');
+    err.textContent = 'Ошибка соединения';
+    err.style.display = 'block';
+  });
+};
+
+var params = new URLSearchParams(window.location.search);
+setActiveTab(params.get('tab') === 'register' ? 'register' : 'login');
 </script></body></html>`);
+});
+
+// Совместимость: вход и регистрация
+app.get('/login', (req, res) => {
+  res.redirect('/auth');
+});
+
+app.get('/register', (req, res) => {
+  res.redirect('/auth?tab=register');
 });
 
 // API для входа
 app.post('/api/login', async (req, res) => {
   const { login, password } = req.body;
-  
-  // Проверяем логин/пароль через БД
-  const account = await db.authenticateAccount(login, password);
-  
-  if (account) {
-    // Создаём токен (ID аккаунта) и ставим в cookie
-    const token = account.id.toString();
+  const identifier = String(login || '').trim();
+  const rawPassword = String(password || '');
+
+  if (!identifier || !rawPassword) {
+    return res.json({ success: false, message: 'Введите логин и пароль' });
+  }
+
+  if (identifier.includes('@')) {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: identifier,
+      password: rawPassword
+    });
+
+    if (error || !data || !data.session) {
+      const lowerMessage = String(error && error.message ? error.message : '').toLowerCase();
+      const message = lowerMessage.includes('email not confirmed')
+        ? 'Подтвердите email перед входом'
+        : 'Неверный email или пароль';
+      return res.json({ success: false, message });
+    }
+
+    const token = data.session.access_token;
+    const account = await ensureAccountFromAuthUser(data.user);
+    if (!account) {
+      return res.json({ success: false, message: 'Ошибка создания аккаунта' });
+    }
+
     res.cookie('authToken', token, {
-      httpOnly: false, // Разрешаем JavaScript доступ для использования в API запросах
+      httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 24 * 60 * 60 * 1000 // 24 часа
+      maxAge: 24 * 60 * 60 * 1000
     });
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       token,
       account: {
         id: account.id,
@@ -199,8 +358,80 @@ app.post('/api/login', async (req, res) => {
       }
     });
   }
-  
+
+  const account = await db.authenticateAccount(identifier, rawPassword);
+  if (account) {
+    const token = account.id.toString();
+    res.cookie('authToken', token, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000
+    });
+
+    return res.json({
+      success: true,
+      token,
+      account: {
+        id: account.id,
+        username: account.username,
+        email: account.email
+      }
+    });
+  }
+
   res.json({ success: false, message: 'Неверный логин или пароль' });
+});
+
+// API для регистрации
+app.post('/api/register', async (req, res) => {
+  const { username, email, password } = req.body;
+  const cleanUsername = String(username || '').trim();
+  const cleanEmail = String(email || '').trim();
+  const rawPassword = String(password || '').trim();
+
+  if (!cleanUsername || !cleanEmail || !rawPassword) {
+    return res.json({ success: false, message: 'Заполните логин, email и пароль' });
+  }
+
+  const existingByUsername = await db.getAccountByUsername(cleanUsername);
+  if (existingByUsername) {
+    return res.json({ success: false, message: 'Логин уже занят' });
+  }
+
+  const existingByEmail = await db.getAccountByEmail(cleanEmail);
+  if (existingByEmail) {
+    return res.json({ success: false, message: 'Email уже зарегистрирован' });
+  }
+
+  const { data, error } = await supabase.auth.signUp({
+    email: cleanEmail,
+    password: rawPassword,
+    options: {
+      data: {
+        username: cleanUsername
+      }
+    }
+  });
+
+  if (error) {
+    return res.json({ success: false, message: error.message || 'Не удалось создать пользователя' });
+  }
+
+  const randomPassword = crypto.randomBytes(16).toString('hex');
+  try {
+    await db.createAccount(cleanUsername, randomPassword, cleanEmail);
+  } catch (e) {
+    const existingAccount = await db.getAccountByEmail(cleanEmail);
+    if (!existingAccount) {
+      return res.json({ success: false, message: 'Не удалось создать аккаунт в системе' });
+    }
+  }
+
+  res.json({
+    success: true,
+    message: 'Регистрация успешна. Подтвердите email, затем войдите в систему.'
+  });
 });
 
 // ==================== API: УПРАВЛЕНИЕ МАГАЗИНАМИ ====================

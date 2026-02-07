@@ -102,6 +102,32 @@ async function getAccountById(accountId) {
 }
 
 /**
+ * Получение аккаунта по email
+ */
+async function getAccountByEmail(email) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('id, username, email, created_at')
+    .eq('email', email)
+    .single();
+
+  return error ? null : data;
+}
+
+/**
+ * Получение аккаунта по логину
+ */
+async function getAccountByUsername(username) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .select('id, username, email, created_at')
+    .eq('username', username)
+    .single();
+
+  return error ? null : data;
+}
+
+/**
  * Удаление аккаунта (автоматически удалит все его компании через CASCADE)
  */
 async function deleteAccount(accountId) {
@@ -1115,6 +1141,8 @@ module.exports = {
   createAccount,
   authenticateAccount,
   getAccountById,
+  getAccountByEmail,
+  getAccountByUsername,
   deleteAccount,
   updateAccountPassword,
   // Компании

@@ -23,7 +23,8 @@ Design Patterns:
 - Safe getters (`safeGet`) for CSV formatting
 - Summarization of stocks to collect `warehouses` and `stocksQty`
 - Category extraction from API `entity` field (auto-capitalized for display)
-- **Auth via httpOnly cookies** (token = account.id) for serverless compatibility
+- **Hybrid Auth**: Supabase Auth (email/password, JWT token) + legacy accounts by username
+- **Auth via httpOnly cookies** (token = account.id or JWT) for serverless compatibility
 - **Password hashing** with SHA256 + salt (pbkdf2, 1000 iterations)
 - **Business ownership verification**: API checks that business belongs to current account
 
@@ -34,7 +35,8 @@ Database Patterns:
 - Indexes on `account_id` and `is_active` for performance
 
 Critical Paths:
-- `/api/login`: POST endpoint authenticates via DB, returns account ID as token
+- `/api/login`: POST endpoint authenticates via Supabase (email) or legacy username, returns token
+- `/api/register`: POST endpoint creates Supabase user and local account
 - `/api/businesses`: GET/POST for listing and creating companies
 - `/api/businesses/:id`: PUT/DELETE for updating and removing companies
 - `/api/wb-finance`: GET financial data for specific business (via `businessId` param)
@@ -47,6 +49,7 @@ Critical Paths:
 - `/wb-max`: rich JSON with seller info, stocks, rating, images (requires auth)
 - `/`: Cashflow (ДДС) main page
 - `/fin-report`: Financial dashboard with business selector and management UI
+- `/auth`: Unified login + registration page
 
 Cashflow UX Patterns:
 - В ДДС «Создать новый…» сначала сохраняет в памяти, запись в БД — только после «Добавить»
