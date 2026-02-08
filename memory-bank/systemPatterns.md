@@ -66,6 +66,7 @@ Stocks (Остатки) UX Patterns:
 - Итоговый остаток = на складе + в пути к клиенту + в пути от клиента
 - Стоимость = итоговый остаток × себестоимость (из `product_costs`)
 - Мультивыбор магазинов через dropdown в стиле фильтров долгов
+- Страница `/stocks` повторяет WB-остатки отдельной таблицей с фиксированными ширинами и скрываемыми колонками деталей
 
 Multi-Company Reporting Patterns:
 - **Sales Report**: Aggregates data by `nmId + brand + company_name` when "All active companies" selected
