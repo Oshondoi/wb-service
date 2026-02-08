@@ -1559,10 +1559,6 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
   <div class="toolbar"></div>
 </div>
 <div class="section">
-  <h2 class="section-title">Максимальная версия</h2>
-  <p class="section-note">Получайте все доступные данные о товаре — цену, остатки, рейтинг, отзывы, изображения, склады и информацию о пункте выдачи (dest).</p>
-</div>
-<div class="section">
   <h2 class="section-title">Параметры запроса</h2>
   <div class="cash-form-row">
     <div>
@@ -2223,7 +2219,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .api-btn.primary{background:rgba(34,197,94,0.18);border-color:rgba(34,197,94,0.7);color:#86efac;box-shadow:0 8px 18px rgba(34,197,94,0.22)}
 .api-btn.primary:hover{border-color:#22c55e;color:#eafff3;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
 .section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:16px 18px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:16px}
-.cash-tabs{display:flex;gap:8px;margin-bottom:14px}
+.cash-tabs-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.cash-tabs{display:flex;gap:8px;margin-bottom:0}
 .cash-tab-btn{padding:8px 14px;border-radius:10px;border:1px solid rgba(148,163,184,0.3);background:rgba(15,23,42,0.85);color:#e2e8f0;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:0.3px;text-transform:uppercase;transition:all 0.2s}
 .cash-tab-btn.active{background:#38bdf8;color:#0b1220;border-color:#38bdf8;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
 .cash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
@@ -2315,19 +2312,6 @@ input[type=number]{-moz-appearance:textfield}
   </aside>
   <main class="main">
     <div class="container">
-  <div class="header-bar">
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <div class="brand"></div>
-    </div>
-    <div class="toolbar">
-      <button id="cashDateRangeBtn" onclick="openCashDateRangePicker()" class="range-btn">
-        <span style="font-size:16px">📅</span>
-        <span>Период:</span>
-        <span id="cashDateRangeDisplay" class="range-value">—</span>
-      </button>
-    </div>
-  </div>
-
   <input type="date" id="cashDateFrom" style="display:none" />
   <input type="date" id="cashDateTo" style="display:none" />
 
@@ -2356,10 +2340,17 @@ input[type=number]{-moz-appearance:textfield}
     </div>
   </div>
 
-  <div class="cash-tabs">
-    <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
-    <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
-    <button id="cashTabStocks" class="cash-tab-btn" onclick="switchCashTab('stocks')">Запасы</button>
+  <div class="cash-tabs-row">
+    <div class="cash-tabs">
+      <button id="cashTabTransactions" class="cash-tab-btn active" onclick="switchCashTab('transactions')">Движение</button>
+      <button id="cashTabDebts" class="cash-tab-btn" onclick="switchCashTab('debts')">Долги</button>
+      <button id="cashTabStocks" class="cash-tab-btn" onclick="switchCashTab('stocks')">Запасы</button>
+    </div>
+    <button id="cashDateRangeBtn" onclick="openCashDateRangePicker()" class="range-btn">
+      <span style="font-size:16px">📅</span>
+      <span>Период:</span>
+      <span id="cashDateRangeDisplay" class="range-value">—</span>
+    </button>
   </div>
 
   <div id="cashflowTransactionsTab">
@@ -5475,9 +5466,9 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
   </aside>
   <main class="main">
     <div class="container">
-  <div class="header-bar">
-    <div class="header-left">
-      <div class="brand"></div>
+  <div class="section">
+    <div class="section-header">
+      <h1>📈 Финансовый отчет</h1>
       <div class="toolbar">
         <button class="api-btn" onclick="openBusinessManager()">🏢 Управление магазинами</button>
         <div id="businessSelector" style="display:flex;gap:10px;align-items:center">
@@ -5486,16 +5477,8 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
             <option value="">Загрузка...</option>
           </select>
         </div>
+        <button class="update-btn" onclick="syncWithWB()" title="Принудительная синхронизация с WB API">🔄 Синхронизация с WB</button>
       </div>
-    </div>
-    <div style="display:flex;gap:12px;align-items:center">
-      <button class="update-btn" onclick="syncWithWB()" title="Принудительная синхронизация с WB API">🔄 Синхронизация с WB</button>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-header">
-      <h1>📈 Финансовый отчет</h1>
     </div>
   </div>
   
