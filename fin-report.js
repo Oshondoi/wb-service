@@ -163,8 +163,8 @@ button{width:100%;padding:15px;border:none;background:linear-gradient(135deg,#22
 button:hover{transform:translateY(-2px);box-shadow:0 16px 35px rgba(59,130,246,0.45)}
 button:active{transform:translateY(0)}
 .hint{font-size:12px;color:#93a4c7;margin-top:8px;font-weight:500}
-.error{background:linear-gradient(135deg,#ef4444 0%,#fb7185 100%);color:#fff;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:600;display:none;box-shadow:0 6px 16px rgba(239,68,68,0.35)}
-.success{background:linear-gradient(135deg,#22c55e 0%,#4ade80 100%);color:#0b1220;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:700;display:none;box-shadow:0 6px 16px rgba(34,197,94,0.35)}
+.error{background:linear-gradient(135deg,#ef4444 0%,#fb7185 100%);color:#fff;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:600;display:none;box-shadow:0 6px 16px rgba(239,68,68,0.35);position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:9999;max-width:480px;width:calc(100% - 40px);text-align:center}
+.success{background:linear-gradient(135deg,#22c55e 0%,#4ade80 100%);color:#0b1220;padding:12px 14px;border-radius:10px;margin-bottom:22px;font-size:13px;font-weight:700;display:none;box-shadow:0 6px 16px rgba(34,197,94,0.35);position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:9999;max-width:480px;width:calc(100% - 40px);text-align:center}
 .auth-forms{min-height:380px;display:flex;flex-direction:column;justify-content:flex-start;position:relative}
 .auth-form{width:100%;position:absolute;top:0;left:0;opacity:0;transform:translateY(8px);transition:opacity 0.25s ease, transform 0.25s ease;pointer-events:none}
 .auth-form.active{opacity:1;transform:translateY(0);pointer-events:auto}
@@ -1448,8 +1448,29 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
-.container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
-body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.sidebar-footer{margin-top:auto}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.main{flex:1;min-width:0;position:relative;z-index:2}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.main{flex:1;min-width:0}
+.container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+@media (max-width: 900px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:relative;top:auto}
+}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
 .brand-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:14px}
@@ -1493,19 +1514,49 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .badge-success{background:rgba(34,197,94,0.18);color:#86efac;border:1px solid rgba(34,197,94,0.35)}
 .badge-warning{background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid rgba(245,158,11,0.35)}
 </style></head><body>
-<div class="container">
-<div class="header-bar">
-  <div class="brand">
-    <div class="brand-mark">WB</div>
-    <div>
-      <div class="brand-title">WB Helper MAX</div>
-      <div class="brand-subtitle">Анализ товаров</div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-top-icon">WB</div>
     </div>
-  </div>
-  <div class="toolbar">
-    <button class="api-btn" onclick="window.location.href='/'">📈 Главная</button>
-    <button class="api-btn secondary" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
-  </div>
+    <a class="sidebar-link" href="/">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+      </span>
+      <span class="sidebar-text">Главная</span>
+    </a>
+    <a class="sidebar-link" href="/fin-report">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
+      </span>
+      <span class="sidebar-text">Финансовый отчет</span>
+    </a>
+    <a class="sidebar-link" href="/products">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
+      </span>
+      <span class="sidebar-text">Анализ товаров</span>
+    </a>
+    <a class="sidebar-link" href="/stocks">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
+      </span>
+      <span class="sidebar-text">Управление остатками</span>
+    </a>
+    <div class="sidebar-footer">
+      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
+        <span class="sidebar-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
+        </span>
+        <span class="sidebar-text">Выход</span>
+      </a>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="container">
+<div class="header-bar">
+  <div class="brand"></div>
+  <div class="toolbar"></div>
 </div>
 <div class="section">
   <h2 class="section-title">Максимальная версия</h2>
@@ -1574,6 +1625,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
     </table>
   </div>
 </div>
+</div>
+  </main>
 </div>
 <script>
 // Функция для чтения cookie
@@ -2104,8 +2157,29 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
-body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.container{width:100%;max-width:1600px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.sidebar-footer{margin-top:auto}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.main{flex:1;min-width:0;position:relative;z-index:2}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.main{flex:1;min-width:0}
+.container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+@media (max-width: 900px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:relative;top:auto}
+}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
 .brand-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:14px}
@@ -2201,20 +2275,49 @@ input[type=number]{-moz-appearance:textfield}
 </style>
 </head>
 <body>
-<div class="container">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-top-icon">WB</div>
+    </div>
+    <a class="sidebar-link" href="/">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+      </span>
+      <span class="sidebar-text">Главная</span>
+    </a>
+    <a class="sidebar-link" href="/fin-report">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
+      </span>
+      <span class="sidebar-text">Финансовый отчет</span>
+    </a>
+    <a class="sidebar-link" href="/products">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
+      </span>
+      <span class="sidebar-text">Анализ товаров</span>
+    </a>
+    <a class="sidebar-link" href="/stocks">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
+      </span>
+      <span class="sidebar-text">Управление остатками</span>
+    </a>
+    <div class="sidebar-footer">
+      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
+        <span class="sidebar-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
+        </span>
+        <span class="sidebar-text">Выход</span>
+      </a>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="container">
   <div class="header-bar">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <div class="brand">
-        <div class="brand-mark">WB</div>
-        <div>
-          <div class="brand-title">WB Analytics</div>
-          <div class="brand-subtitle">Движение денег</div>
-        </div>
-      </div>
-      <div class="toolbar">
-        <button class="api-btn" onclick="window.location.href='/fin-report'">⬅️ Финансовый отчет</button>
-        <button class="api-btn" onclick="window.location.href='/products'">🔍 Анализ товаров</button>
-      </div>
+      <div class="brand"></div>
     </div>
     <div class="toolbar">
       <button id="cashDateRangeBtn" onclick="openCashDateRangePicker()" class="range-btn">
@@ -2222,7 +2325,6 @@ input[type=number]{-moz-appearance:textfield}
         <span>Период:</span>
         <span id="cashDateRangeDisplay" class="range-value">—</span>
       </button>
-      <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
     </div>
   </div>
 
@@ -2554,6 +2656,8 @@ input[type=number]{-moz-appearance:textfield}
       </div>
     </div>
   </div>
+    </div>
+  </main>
 </div>
 
 <!-- Модалка: операции долга -->
@@ -5106,6 +5210,106 @@ if (savedTab === 'stocks') {
 </body></html>`);
 });
 
+// Страница управления остатками (в разработке)
+app.get('/stocks', requireAuth, (req, res) => {
+  res.send(`<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>WB Helper - Управление остатками</title>
+<style>
+*{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.sidebar-footer{margin-top:auto}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.main{flex:1;min-width:0;position:relative;z-index:2}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.main{flex:1;min-width:0}
+.container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+.header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
+.brand-mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:14px}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.api-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:transparent;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:all 0.2s;letter-spacing:0.4px;text-transform:uppercase}
+.api-btn:hover{transform:translateY(-2px);border-color:#38bdf8;color:#fff;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
+.section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:16px 18px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:16px}
+.section-title{margin:0 0 12px;font-size:14px;font-weight:700;color:#f8fafc;letter-spacing:0.3px}
+.section-note{color:#cbd5f5;font-size:12px;line-height:1.6;margin:0}
+@media (max-width: 900px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:relative;top:auto}
+}
+</style></head><body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-top-icon">WB</div>
+    </div>
+    <a class="sidebar-link" href="/">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+      </span>
+      <span class="sidebar-text">Главная</span>
+    </a>
+    <a class="sidebar-link" href="/fin-report">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
+      </span>
+      <span class="sidebar-text">Финансовый отчет</span>
+    </a>
+    <a class="sidebar-link" href="/products">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
+      </span>
+      <span class="sidebar-text">Анализ товаров</span>
+    </a>
+    <a class="sidebar-link" href="/stocks">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
+      </span>
+      <span class="sidebar-text">Управление остатками</span>
+    </a>
+    <div class="sidebar-footer">
+      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
+        <span class="sidebar-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
+        </span>
+        <span class="sidebar-text">Выход</span>
+      </a>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="container">
+      <div class="header-bar">
+        <div class="brand"></div>
+        <div class="toolbar"></div>
+      </div>
+      <div class="section">
+        <h2 class="section-title">Управление остатками</h2>
+        <p class="section-note">Раздел в разработке. Здесь появится отдельный интерфейс управления остатками.</p>
+      </div>
+    </div>
+  </main>
+</div>
+</body></html>`);
+});
+
 // Главная страница - Финансовый отчет
 app.get('/fin-report', requireAuth, (req, res) => {
   res.send(`<!doctype html>
@@ -5119,8 +5323,29 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
-body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.container{width:100%;max-width:1500px;margin:0 auto;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.sidebar-footer{margin-top:auto}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.main{flex:1;min-width:0;position:relative;z-index:2}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.main{flex:1;min-width:0}
+.container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+@media (max-width: 900px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:relative;top:auto}
+}
 h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .header-left{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
@@ -5210,27 +5435,57 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
 </style>
 </head>
 <body>
-<div class="container">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-top-icon">WB</div>
+    </div>
+    <a class="sidebar-link" href="/">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+      </span>
+      <span class="sidebar-text">Главная</span>
+    </a>
+    <a class="sidebar-link" href="/fin-report">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
+      </span>
+      <span class="sidebar-text">Финансовый отчет</span>
+    </a>
+    <a class="sidebar-link" href="/products">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
+      </span>
+      <span class="sidebar-text">Анализ товаров</span>
+    </a>
+    <a class="sidebar-link" href="/stocks">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
+      </span>
+      <span class="sidebar-text">Управление остатками</span>
+    </a>
+    <div class="sidebar-footer">
+      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
+        <span class="sidebar-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
+        </span>
+        <span class="sidebar-text">Выход</span>
+      </a>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="container">
   <div class="header-bar">
     <div class="header-left">
-      <div class="brand">
-        <div class="brand-mark">WB</div>
-        <div>
-          <div class="brand-title">WB Analytics</div>
-          <div class="brand-subtitle">Финансовый контроль</div>
-        </div>
-      </div>
+      <div class="brand"></div>
       <div class="toolbar">
         <button class="api-btn" onclick="openBusinessManager()">🏢 Управление магазинами</button>
-        <button class="api-btn" onclick="window.location.href='/products'">🔍 Анализ товаров</button>
-        <button class="api-btn" onclick="window.location.href='/'">🏠 Главная</button>
         <div id="businessSelector" style="display:flex;gap:10px;align-items:center">
           <span class="selector-label">Магазин:</span>
           <select id="currentBusiness" onchange="switchBusiness()" class="select-control">
             <option value="">Загрузка...</option>
           </select>
         </div>
-        <button class="api-btn" onclick="localStorage.removeItem('authToken');window.location.href='/api/logout'">🚪 Выход</button>
       </div>
     </div>
     <div style="display:flex;gap:12px;align-items:center">
@@ -5322,6 +5577,8 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
     </div>
   </div>
 
+    </div>
+  </main>
 </div>
 
   <!-- Модальное окно: Детали отчёта -->
