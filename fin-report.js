@@ -794,6 +794,7 @@ app.get('/api/cash/debts', requireAuth, async (req, res) => {
   const status = req.query.status || null;
 
   try {
+    await db.normalizeCashDebtGroups(req.account.id);
     const items = await db.getCashDebts(req.account.id, status);
     res.json({ success: true, items });
   } catch (error) {
@@ -1350,6 +1351,7 @@ app.get('/api/wb-fin-report', requireAuth, async (req, res) => {
 app.get('/api/wb-stocks', requireAuth, async (req, res) => {
   try {
     const rawIds = (req.query.businessIds || '').split(',').map(id => parseInt(id, 10)).filter(Boolean);
+    const debug = req.query.debug === '1';
     const businesses = await db.getBusinessesByAccount(req.account.id, false, true);
     const filtered = rawIds.length ? businesses.filter(b => rawIds.includes(b.id)) : businesses;
 
@@ -1376,7 +1378,10 @@ app.get('/api/wb-stocks', requireAuth, async (req, res) => {
           if (!nmId) return;
 
           const key = business.id + ':' + nmId;
-          const qty = Number(stock.quantity || stock.quantityFull || stock.quantityNotInOrders || 0);
+          const rawQtyValue = stock.quantity;
+          const rawQty = Number(rawQtyValue ?? 0);
+          const rawQtyFull = Number(stock.quantityFull || 0);
+          const rawQtyNotInOrders = Number(stock.quantityNotInOrders || 0);
           const inWayToClient = Number(stock.inWayToClient || stock.inWayToClientQty || 0);
           const inWayFromClient = Number(stock.inWayFromClient || stock.inWayFromClientQty || 0);
 
@@ -1384,28 +1389,49 @@ app.get('/api/wb-stocks', requireAuth, async (req, res) => {
             itemsMap.set(key, {
               business_id: business.id,
               nm_id: nmId,
+              seller_article: stock.supplierArticle || stock.supplier_article || stock.vendorCode || '',
               brand: stock.brand || stock.tradeMark || '',
               subject: stock.subject || stock.category || '',
               qty: 0,
               in_way_to_client: 0,
               in_way_from_client: 0,
-              total_qty: 0
+              total_qty: 0,
+              qty_full: 0,
+              qty_not_in_orders: 0,
+              qty_raw: 0,
+              qty_raw_seen: false
             });
           }
 
           const item = itemsMap.get(key);
-          item.qty += qty;
+          if (!item.seller_article) {
+            item.seller_article = stock.supplierArticle || stock.supplier_article || stock.vendorCode || '';
+          }
+          if (rawQtyValue !== undefined && rawQtyValue !== null) {
+            item.qty_raw_seen = true;
+          }
+          item.qty_full += rawQtyFull;
+          item.qty_not_in_orders += rawQtyNotInOrders;
+          item.qty_raw += rawQty;
           item.in_way_to_client += inWayToClient;
           item.in_way_from_client += inWayFromClient;
-          item.total_qty = item.qty + item.in_way_to_client + item.in_way_from_client;
         });
       } catch (err) {
         errors.push({ business_id: business.id, error: err.message });
       }
     }
 
-    const items = Array.from(itemsMap.values());
-    return res.json({ success: true, items, errors });
+    const items = Array.from(itemsMap.values()).map(item => {
+      const baseQty = item.qty_raw_seen
+        ? item.qty_raw
+        : (item.qty_full || item.qty_not_in_orders || 0);
+      return {
+        ...item,
+        qty: baseQty,
+        total_qty: baseQty + item.in_way_from_client
+      };
+    });
+    return res.json({ success: true, items, errors, debug });
   } catch (err) {
     return res.json({ success: false, error: err.message });
   }
@@ -1462,9 +1488,12 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
 .sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
 .sidebar-link:hover .sidebar-text{color:#fff}
-.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
 .sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
-.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
@@ -2167,9 +2196,12 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
 .sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
 .sidebar-link:hover .sidebar-text{color:#fff}
-.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
 .sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
-.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
@@ -2506,17 +2538,18 @@ input[type=number]{-moz-appearance:textfield}
               <th>Магазин</th>
               <th>Бренд</th>
               <th>Предмет</th>
+              <th>Артикул продавца</th>
               <th>Артикул WB</th>
-              <th style="text-align:right">На складе</th>
-              <th style="text-align:right">В пути к клиенту</th>
-              <th style="text-align:right">В пути от клиента</th>
-              <th style="text-align:right">Итого</th>
+              <th style="text-align:right">Доступно на складе</th>
+              <th style="text-align:right">В пути до получателей</th>
+              <th style="text-align:right">В пути возвраты на склад WB</th>
+              <th style="text-align:right">Всего находится на складах</th>
               <th style="text-align:right">Себестоимость</th>
               <th style="text-align:right">Сумма</th>
             </tr>
           </thead>
           <tbody id="cashStocksBody">
-            <tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+            <tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
           </tbody>
         </table>
       </div>
@@ -4124,12 +4157,12 @@ function loadStocksData() {
   const ids = (selectedIds && selectedIds.length) ? selectedIds : availableIds;
 
   if (!ids.length) {
-    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет магазинов с API ключом</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Нет магазинов с API ключом</td></tr>';
     if (countEl) countEl.textContent = '0';
     return;
   }
 
-  body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>';
+  body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>';
   if (countEl) countEl.textContent = '0';
 
   const query = encodeURIComponent(ids.join(','));
@@ -4146,7 +4179,7 @@ function loadStocksData() {
     renderStocksTable();
   })
   .catch(err => {
-    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Ошибка: ' + escapeHtml(err.message) + '</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Ошибка: ' + escapeHtml(err.message) + '</td></tr>';
     if (countEl) countEl.textContent = '0';
   });
 }
@@ -4179,7 +4212,7 @@ function renderStocksTable() {
   if (!body) return;
 
   if (!cashStocksItems.length) {
-    body.innerHTML = '<tr><td colspan="10" class="cash-muted" style="text-align:center;padding:16px">Нет данных</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Нет данных</td></tr>';
     if (countEl) countEl.textContent = '0';
     return;
   }
@@ -4187,6 +4220,7 @@ function renderStocksTable() {
   const rows = cashStocksItems.map(item => {
     const business = businesses.find(b => b.id === item.business_id);
     const businessName = business ? business.company_name : '—';
+    const sellerArticle = item.seller_article || '—';
     const nmId = item.nm_id || '—';
     const brand = item.brand || '—';
     const subject = item.subject || '—';
@@ -4202,6 +4236,7 @@ function renderStocksTable() {
       '<td>' + escapeHtml(businessName) + '</td>' +
       '<td>' + escapeHtml(brand) + '</td>' +
       '<td>' + escapeHtml(subject) + '</td>' +
+      '<td>' + escapeHtml(sellerArticle) + '</td>' +
       '<td>' + escapeHtml(nmId) + '</td>' +
       '<td style="text-align:right">' + formatQty(qty) + '</td>' +
       '<td style="text-align:right">' + formatQty(inWayToClient) + '</td>' +
@@ -5228,9 +5263,12 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
 .sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
 .sidebar-link:hover .sidebar-text{color:#fff}
-.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
 .sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
-.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
@@ -5264,8 +5302,11 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .stocks-head-cell{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .stocks-toggle{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;border:1px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.85);color:#e2e8f0;font-weight:800;font-size:12px;cursor:pointer;transition:all 0.2s;box-sizing:border-box}
 .stocks-toggle:hover{border-color:#38bdf8;color:#fff;box-shadow:0 6px 16px rgba(56,189,248,0.2)}
-#stocksTable .stock-extra{width:0;min-width:0;max-width:0;overflow:hidden;white-space:nowrap;padding-left:0;padding-right:0;border-left:none;border-right:none;transition:width 0.28s ease,padding 0.28s ease;will-change:width}
-#stocksTable.stocks-details-open .stock-extra{width:140px;min-width:140px;max-width:140px;padding-left:10px;padding-right:10px}
+#stocksTable{--stock-extra-width:0px;--stock-extra-total-width:0px}
+#stocksTable .stock-extra{width:var(--stock-extra-width);min-width:var(--stock-extra-width);max-width:var(--stock-extra-width);overflow:hidden;white-space:nowrap;padding-left:0;padding-right:0;border-left:none;border-right:none;transition:width 1.5s ease,padding 1.5s ease}
+#stocksTable .stock-extra-total{width:var(--stock-extra-total-width);min-width:var(--stock-extra-total-width);max-width:var(--stock-extra-total-width)}
+#stocksTable.stocks-details-open{--stock-extra-width:140px;--stock-extra-total-width:120px}
+#stocksTable.stocks-details-open .stock-extra{padding-left:10px;padding-right:10px}
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(2,6,23,0.8);backdrop-filter:blur(6px);z-index:1000;align-items:center;justify-content:center;padding:24px;overflow:auto}
 .modal.active{display:flex}
 .modal-content{background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.2);border-radius:16px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,0.5);max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);overflow:auto;margin:0 auto}
@@ -5344,23 +5385,24 @@ h1{margin:0;font-size:24px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
                 <th style="width:160px">Магазин</th>
                 <th style="width:120px">Бренд</th>
                 <th style="width:200px">Предмет</th>
+                <th style="width:140px">Артикул продавца</th>
                 <th style="width:110px">Артикул WB</th>
                 <th style="text-align:right;width:90px">
                   <div class="stocks-head-cell">
-                    <span>На складе</span>
+                    <span>Доступно на складе</span>
                     <button type="button" class="stocks-toggle" onclick="toggleStocksColumns()" title="Показать детали">+</button>
                   </div>
                 </th>
-                <th class="stock-extra" style="text-align:right;width:140px">В пути к клиенту</th>
-                <th class="stock-extra" style="text-align:right;width:140px">В пути от клиента</th>
-                <th class="stock-extra" style="text-align:right;width:120px">Итого</th>
+                <th class="stock-extra" style="text-align:right">В пути до получателей</th>
+                <th class="stock-extra" style="text-align:right">В пути возвраты на склад WB</th>
+                <th class="stock-extra stock-extra-total" style="text-align:right">Всего находится на складах</th>
                 <th style="text-align:right;width:140px">Себестоимость</th>
                 <th style="text-align:right;width:140px">Сумма</th>
                 <th class="stocks-spacer"></th>
               </tr>
             </thead>
             <tbody id="stocksBody">
-              <tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
+              <tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>
             </tbody>
           </table>
         </div>
@@ -5542,13 +5584,13 @@ function loadStocksData() {
   var ids = (selectedIds && selectedIds.length) ? selectedIds : availableIds;
 
   if (!ids.length) {
-    body.innerHTML = '<tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Нет магазинов с API ключом</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Нет магазинов с API ключом</td></tr>';
     if (countEl) countEl.textContent = '0';
     if (errorsEl) errorsEl.textContent = '';
     return;
   }
 
-  body.innerHTML = '<tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>';
+  body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Загрузка...</td></tr>';
   if (countEl) countEl.textContent = '0';
   if (errorsEl) errorsEl.textContent = '';
 
@@ -5572,7 +5614,7 @@ function loadStocksData() {
     renderStocksTable();
   })
   .catch(function(err) {
-    body.innerHTML = '<tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Ошибка: ' + escapeHtml(err.message) + '</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Ошибка: ' + escapeHtml(err.message) + '</td></tr>';
     if (countEl) countEl.textContent = '0';
   });
 }
@@ -5605,7 +5647,7 @@ function renderStocksTable() {
   if (!body) return;
 
   if (!stocksItems.length) {
-    body.innerHTML = '<tr><td colspan="11" class="cash-muted" style="text-align:center;padding:16px">Нет данных</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="cash-muted" style="text-align:center;padding:16px">Нет данных</td></tr>';
     if (countEl) countEl.textContent = '0';
     return;
   }
@@ -5613,6 +5655,7 @@ function renderStocksTable() {
   var rows = stocksItems.map(function(item) {
     var business = businesses.find(function(b) { return b.id === item.business_id; });
     var businessName = business ? business.company_name : '—';
+    var sellerArticle = item.seller_article || '—';
     var nmId = item.nm_id || '—';
     var brand = item.brand || '—';
     var subject = item.subject || '—';
@@ -5628,11 +5671,12 @@ function renderStocksTable() {
       '<td>' + escapeHtml(businessName) + '</td>' +
       '<td>' + escapeHtml(brand) + '</td>' +
       '<td>' + escapeHtml(subject) + '</td>' +
+      '<td>' + escapeHtml(sellerArticle) + '</td>' +
       '<td>' + escapeHtml(nmId) + '</td>' +
       '<td style="text-align:right">' + formatQty(qty) + '</td>' +
       '<td class="stock-extra" style="text-align:right">' + formatQty(inWayToClient) + '</td>' +
       '<td class="stock-extra" style="text-align:right">' + formatQty(inWayFromClient) + '</td>' +
-      '<td class="stock-extra" style="text-align:right">' + formatQty(totalQty) + '</td>' +
+      '<td class="stock-extra stock-extra-total" style="text-align:right">' + formatQty(totalQty) + '</td>' +
       '<td style="text-align:right">' + (costValue !== null ? formatMoney(costValue) : '—') + '</td>' +
       '<td style="text-align:right">' + (sumValue !== null ? formatMoney(sumValue) : '—') + '</td>' +
       '<td class="stocks-spacer"></td>' +
@@ -5688,9 +5732,12 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
 .sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
 .sidebar-link:hover .sidebar-text{color:#fff}
-.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.16);border-color:rgba(239,68,68,0.5)}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
 .sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
-.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.22);border-color:rgba(239,68,68,0.7)}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
