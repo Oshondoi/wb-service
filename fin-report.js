@@ -434,6 +434,52 @@ app.post('/api/register', async (req, res) => {
   });
 });
 
+  // ==================== API: ПРОФИЛЬ ====================
+
+  app.get('/api/profile', requireAuth, async (req, res) => {
+    try {
+      const account = await db.getAccountById(req.account.id);
+      if (!account) {
+        return res.json({ success: false, error: 'Аккаунт не найден' });
+      }
+      res.json({
+        success: true,
+        profile: {
+          id: account.id,
+          username: account.username || '',
+          email: account.email || ''
+        }
+      });
+    } catch (error) {
+      res.json({ success: false, error: error.message });
+    }
+  });
+
+  app.post('/api/profile', requireAuth, async (req, res) => {
+    const username = String(req.body?.username || '').trim();
+    const emailRaw = String(req.body?.email || '').trim();
+    const email = emailRaw || null;
+
+    if (!username) {
+      return res.json({ success: false, error: 'Имя обязательно' });
+    }
+
+    try {
+      await db.updateAccountProfile(req.account.id, { username, email });
+      const account = await db.getAccountById(req.account.id);
+      res.json({
+        success: true,
+        profile: {
+          id: account.id,
+          username: account.username || '',
+          email: account.email || ''
+        }
+      });
+    } catch (error) {
+      res.json({ success: false, error: error.message });
+    }
+  });
+
 // ==================== API: УПРАВЛЕНИЕ МАГАЗИНАМИ ====================
 
 // Получить список магазинов текущего аккаунта
@@ -529,6 +575,570 @@ app.get('/api/businesses/default', requireAuth, async (req, res) => {
     res.json({ success: true, business });
   } catch (error) {
     res.json({ success: false, error: error.message });
+  }
+});
+
+// ==================== API: FBO ОТГРУЗКИ ====================
+
+function normalizeFboName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseOptionalInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function pickRpcRow(data) {
+  if (Array.isArray(data)) {
+    return data[0] || null;
+  }
+  return data || null;
+}
+
+app.get('/api/fbo/sources', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('fbo_sources')
+      .select('id, name, is_active, created_at')
+      .eq('account_id', req.account.id)
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+    res.json({ success: true, items: data || [] });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки источников' });
+  }
+});
+
+app.post('/api/fbo/sources', requireAuth, async (req, res) => {
+  const name = normalizeFboName(req.body && req.body.name);
+  if (!name) {
+    return res.json({ success: false, error: 'Название источника обязательно' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('fbo_sources')
+      .insert({
+        account_id: req.account.id,
+        name,
+        created_by_user_id: req.account.id
+      })
+      .select('id, name, is_active, created_at')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка создания источника' });
+  }
+});
+
+app.get('/api/fbo/warehouses', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('fbo_warehouses')
+      .select('id, name, wb_code, is_active, created_at')
+      .eq('account_id', req.account.id)
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+
+    if (error) throw error;
+    res.json({ success: true, items: data || [] });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки складов' });
+  }
+});
+
+app.post('/api/fbo/warehouses', requireAuth, async (req, res) => {
+  const name = normalizeFboName(req.body && req.body.name);
+  const wbCodeRaw = req.body && req.body.wb_code ? String(req.body.wb_code) : '';
+  const wbCode = wbCodeRaw.trim() || null;
+
+  if (!name) {
+    return res.json({ success: false, error: 'Название склада обязательно' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('fbo_warehouses')
+      .insert({
+        account_id: req.account.id,
+        name,
+        wb_code: wbCode,
+        created_by_user_id: req.account.id
+      })
+      .select('id, name, wb_code, is_active, created_at')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка создания склада' });
+  }
+});
+
+async function getOwnedFboShipment(accountId, shipmentId) {
+  const { data, error } = await supabase
+    .from('fbo_shipments')
+    .select('id, status, account_id')
+    .eq('id', shipmentId)
+    .eq('account_id', accountId)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+app.delete('/api/fbo/sources/:id', requireAuth, async (req, res) => {
+  const sourceId = parseOptionalInt(req.params.id);
+  if (!sourceId) return res.json({ success: false, error: 'Некорректный source_id' });
+
+  try {
+    const { error } = await supabase
+      .from('fbo_sources')
+      .delete()
+      .eq('id', sourceId)
+      .eq('account_id', req.account.id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления источника' });
+  }
+});
+
+app.delete('/api/fbo/warehouses/:id', requireAuth, async (req, res) => {
+  const warehouseId = parseOptionalInt(req.params.id);
+  if (!warehouseId) return res.json({ success: false, error: 'Некорректный warehouse_id' });
+
+  try {
+    const { error } = await supabase
+      .from('fbo_warehouses')
+      .delete()
+      .eq('id', warehouseId)
+      .eq('account_id', req.account.id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления склада' });
+  }
+});
+
+app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('fbo_shipments')
+      .select('id, public_id, status, created_at, source_id, created_by_user_id, fbo_sources(name)')
+      .eq('account_id', req.account.id)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (error) throw error;
+
+    const shipmentIds = (data || []).map(item => item.id);
+    let whMap = {};
+    if (shipmentIds.length) {
+      const { data: links } = await supabase
+        .from('fbo_shipment_warehouses')
+        .select('shipment_id, id')
+        .in('shipment_id', shipmentIds);
+      (links || []).forEach(link => {
+        whMap[link.shipment_id] = (whMap[link.shipment_id] || 0) + 1;
+      });
+    }
+
+    const items = (data || []).map(item => ({
+      id: item.id,
+      public_id: item.public_id,
+      status: item.status,
+      created_at: item.created_at,
+      source_id: item.source_id,
+      created_by_user_id: item.created_by_user_id,
+      source_name: item.fbo_sources && item.fbo_sources.name ? item.fbo_sources.name : null,
+      warehouses_count: whMap[item.id] || 0
+    }));
+
+    res.json({ success: true, items });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки поставок' });
+  }
+});
+
+app.post('/api/fbo/shipments', requireAuth, async (req, res) => {
+  const sourceId = parseOptionalInt(req.body && req.body.source_id);
+  if (!sourceId) {
+    return res.json({ success: false, error: 'source_id обязателен' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('fbo_shipments')
+      .insert({
+        account_id: req.account.id,
+        source_id: sourceId,
+        created_by_user_id: req.account.id
+      })
+      .select('id, public_id, status, created_at, source_id')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка создания поставки' });
+  }
+});
+
+app.delete('/api/fbo/shipments/:id', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.params.id);
+  if (!shipmentId) return res.json({ success: false, error: 'Некорректный shipment_id' });
+
+  try {
+    const { error } = await supabase
+      .from('fbo_shipments')
+      .delete()
+      .eq('id', shipmentId)
+      .eq('account_id', req.account.id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления поставки' });
+  }
+});
+
+app.get('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.params.shipmentId);
+  if (!shipmentId) return res.json({ success: false, error: 'Некорректный shipment_id' });
+
+  try {
+    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+
+    const { data, error } = await supabase
+      .from('fbo_shipment_warehouses')
+      .select('id, shipment_id, warehouse_id, created_at, fbo_warehouses(name, wb_code)')
+      .eq('shipment_id', shipmentId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    const items = (data || []).map(item => ({
+      id: item.id,
+      shipment_id: item.shipment_id,
+      warehouse_id: item.warehouse_id,
+      warehouse_name: item.fbo_warehouses && item.fbo_warehouses.name ? item.fbo_warehouses.name : null,
+      wb_code: item.fbo_warehouses && item.fbo_warehouses.wb_code ? item.fbo_warehouses.wb_code : null,
+      created_at: item.created_at
+    }));
+
+    res.json({ success: true, items });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки складов поставки' });
+  }
+});
+
+app.post('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.params.shipmentId);
+  const warehouseId = parseOptionalInt(req.body && req.body.warehouse_id);
+  if (!shipmentId || !warehouseId) {
+    return res.json({ success: false, error: 'shipment_id и warehouse_id обязательны' });
+  }
+
+  try {
+    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Изменения доступны только для draft поставки' });
+
+    const { data: wh, error: whError } = await supabase
+      .from('fbo_warehouses')
+      .select('id')
+      .eq('id', warehouseId)
+      .eq('account_id', req.account.id)
+      .single();
+    if (whError || !wh) {
+      return res.json({ success: false, error: 'Склад не найден' });
+    }
+
+    const { data, error } = await supabase
+      .from('fbo_shipment_warehouses')
+      .upsert({
+        shipment_id: shipmentId,
+        warehouse_id: warehouseId,
+        created_by_user_id: req.account.id
+      }, {
+        onConflict: 'shipment_id,warehouse_id'
+      })
+      .select('id, shipment_id, warehouse_id, created_at')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка добавления склада в поставку' });
+  }
+});
+
+app.delete('/api/fbo/shipment-warehouses/:id', requireAuth, async (req, res) => {
+  const shipmentWarehouseId = parseOptionalInt(req.params.id);
+  if (!shipmentWarehouseId) return res.json({ success: false, error: 'Некорректный id' });
+
+  try {
+    const { data: link, error: linkError } = await supabase
+      .from('fbo_shipment_warehouses')
+      .select('id, shipment_id')
+      .eq('id', shipmentWarehouseId)
+      .single();
+
+    if (linkError || !link) return res.json({ success: false, error: 'Связка не найдена' });
+
+    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Изменения доступны только для draft поставки' });
+
+    const { error } = await supabase
+      .from('fbo_shipment_warehouses')
+      .delete()
+      .eq('id', shipmentWarehouseId);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления склада из поставки' });
+  }
+});
+
+app.get('/api/fbo/boxes', requireAuth, async (req, res) => {
+  const shipmentWarehouseId = parseOptionalInt(req.query.shipmentWarehouseId);
+  if (!shipmentWarehouseId) {
+    return res.json({ success: true, items: [] });
+  }
+
+  try {
+    const { data: link, error: linkError } = await supabase
+      .from('fbo_shipment_warehouses')
+      .select('id, shipment_id')
+      .eq('id', shipmentWarehouseId)
+      .single();
+
+    if (linkError || !link) return res.json({ success: false, error: 'Связка склад-поставка не найдена' });
+
+    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+
+    const { data, error } = await supabase
+      .from('fbo_boxes')
+      .select('id, shipment_id, shipment_warehouse_id, box_no, created_at')
+      .eq('shipment_warehouse_id', shipmentWarehouseId)
+      .order('box_no', { ascending: true });
+
+    if (error) throw error;
+    res.json({ success: true, items: data || [] });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки коробов' });
+  }
+});
+
+app.post('/api/fbo/boxes', requireAuth, async (req, res) => {
+  const shipmentWarehouseId = parseOptionalInt(req.body && req.body.shipment_warehouse_id);
+  if (!shipmentWarehouseId) {
+    return res.json({ success: false, error: 'shipment_warehouse_id обязателен' });
+  }
+
+  try {
+    const { data: link, error: linkError } = await supabase
+      .from('fbo_shipment_warehouses')
+      .select('id, shipment_id')
+      .eq('id', shipmentWarehouseId)
+      .single();
+
+    if (linkError || !link) return res.json({ success: false, error: 'Связка склад-поставка не найдена' });
+
+    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Добавлять короба можно только в draft поставку' });
+
+    const { data, error } = await supabase.rpc('fbo_create_box_v2', {
+      p_shipment_warehouse_id: shipmentWarehouseId,
+      p_created_by_user_id: req.account.id
+    });
+
+    if (error) throw error;
+
+    const item = pickRpcRow(data);
+    if (!item) {
+      return res.json({ success: false, error: 'Не удалось создать короб' });
+    }
+
+    res.json({ success: true, item });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка создания короба' });
+  }
+});
+
+app.delete('/api/fbo/boxes/:id', requireAuth, async (req, res) => {
+  const boxId = parseOptionalInt(req.params.id);
+  if (!boxId) return res.json({ success: false, error: 'Некорректный box_id' });
+
+  try {
+    const { data: box, error: boxError } = await supabase
+      .from('fbo_boxes')
+      .select('id, shipment_id')
+      .eq('id', boxId)
+      .single();
+
+    if (boxError || !box) return res.json({ success: false, error: 'Короб не найден' });
+
+    const shipment = await getOwnedFboShipment(req.account.id, box.shipment_id);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Удаление доступно только в draft поставке' });
+
+    const { error } = await supabase
+      .from('fbo_boxes')
+      .delete()
+      .eq('id', boxId);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления короба' });
+  }
+});
+
+app.post('/api/fbo/scans', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.body && req.body.shipment_id);
+  const boxId = parseOptionalInt(req.body && req.body.box_id);
+  const barcode = String((req.body && req.body.barcode) || '').trim();
+
+  if (!shipmentId || !boxId || !barcode) {
+    return res.json({ success: false, error: 'shipment_id, box_id, barcode обязательны' });
+  }
+
+  try {
+    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Сканирование доступно только для draft поставки' });
+
+    const { data: box, error: boxError } = await supabase
+      .from('fbo_boxes')
+      .select('id, shipment_id')
+      .eq('id', boxId)
+      .eq('shipment_id', shipmentId)
+      .single();
+
+    if (boxError || !box) return res.json({ success: false, error: 'Короб не найден в указанной поставке' });
+
+    const { data, error } = await supabase
+      .from('fbo_scan_events')
+      .insert({
+        shipment_id: shipmentId,
+        box_id: boxId,
+        barcode,
+        created_by_user_id: req.account.id
+      })
+      .select('*')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка сохранения скана' });
+  }
+});
+
+app.delete('/api/fbo/scans/:id', requireAuth, async (req, res) => {
+  const scanId = parseOptionalInt(req.params.id);
+  if (!scanId) return res.json({ success: false, error: 'Некорректный scan_id' });
+
+  try {
+    const { data: scan, error: scanError } = await supabase
+      .from('fbo_scan_events')
+      .select('id, shipment_id')
+      .eq('id', scanId)
+      .single();
+
+    if (scanError || !scan) return res.json({ success: false, error: 'Скан не найден' });
+
+    const shipment = await getOwnedFboShipment(req.account.id, scan.shipment_id);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Удаление доступно только в draft поставке' });
+
+    const { error } = await supabase
+      .from('fbo_scan_events')
+      .delete()
+      .eq('id', scanId);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка удаления скана' });
+  }
+});
+
+app.post('/api/fbo/scans/undo-last', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.body && req.body.shipment_id);
+  if (!shipmentId) {
+    return res.json({ success: false, error: 'shipment_id обязателен' });
+  }
+
+  try {
+    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') return res.json({ success: false, error: 'Отмена доступна только в draft поставке' });
+
+    const { data, error } = await supabase.rpc('fbo_undo_last_scan', {
+      p_shipment_id: shipmentId,
+      p_user_id: null
+    });
+
+    if (error) throw error;
+
+    const item = pickRpcRow(data);
+    if (!item) {
+      return res.json({ success: false, error: 'Нет сканов для отмены' });
+    }
+
+    res.json({ success: true, item });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка отмены скана' });
+  }
+});
+
+app.get('/api/fbo/scans/recent', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.query.shipmentId);
+  if (!shipmentId) {
+    return res.json({ success: true, items: [] });
+  }
+
+  try {
+    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+
+    const { data, error } = await supabase
+      .from('fbo_scan_events')
+      .select('id, barcode, created_at, created_by_user_id, box_id, fbo_boxes(box_no, shipment_warehouse_id)')
+      .eq('shipment_id', shipmentId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    const items = (data || []).map(item => ({
+      id: item.id,
+      barcode: item.barcode,
+      created_at: item.created_at,
+      created_by_user_id: item.created_by_user_id,
+      box_id: item.box_id,
+      box_no: item.fbo_boxes && item.fbo_boxes.box_no ? item.fbo_boxes.box_no : null,
+      shipment_warehouse_id: item.fbo_boxes && item.fbo_boxes.shipment_warehouse_id ? item.fbo_boxes.shipment_warehouse_id : null
+    }));
+
+    res.json({ success: true, items });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки сканов' });
   }
 });
 
@@ -1461,6 +2071,250 @@ app.get('/api/logout', (req, res) => {
   res.redirect('/login');
 });
 
+function renderSidebar(activePath = '/') {
+  return `
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <button type="button" class="sidebar-top-icon" onclick="openProfileModal()" title="Профиль">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="8" r="4" /></svg>
+      </button>
+    </div>
+    <a class="sidebar-link" href="/">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
+      </span>
+      <span class="sidebar-text">Главная</span>
+    </a>
+    <a class="sidebar-link" href="/fin-report">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
+      </span>
+      <span class="sidebar-text">Финансовый отчет</span>
+    </a>
+    <a class="sidebar-link" href="/products">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
+      </span>
+      <span class="sidebar-text">Анализ товаров</span>
+    </a>
+    <a class="sidebar-link" href="/stocks">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
+      </span>
+      <span class="sidebar-text">Управление остатками</span>
+    </a>
+    <a class="sidebar-link" href="/shipments">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M8 12h8" /></svg>
+      </span>
+      <span class="sidebar-text">Отгрузки</span>
+    </a>
+    <a class="sidebar-link" href="/shipments-2">
+      <span class="sidebar-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 9v6" /><path d="M9 12h6" /></svg>
+      </span>
+      <span class="sidebar-text">Отгрузки 2</span>
+    </a>
+    <div class="sidebar-footer">
+      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
+        <span class="sidebar-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
+        </span>
+        <span class="sidebar-text">Выход</span>
+      </a>
+    </div>
+  </aside>`;
+}
+
+function renderProfileModal() {
+  return `
+<style id="profileModalSharedStyles">
+#profileModal .profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+#profileModal .profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+#profileModal .profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+#profileModal .profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#profileModal .profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+#profileModal .profile-field{display:flex;flex-direction:column;gap:6px}
+#profileModal .profile-field.full{grid-column:1 / -1}
+#profileModal .profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
+#profileModal .profile-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px}
+#profileModal .profile-input{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
+#profileModal .profile-input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
+#profileModal .profile-save-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:rgba(34,197,94,0.18);color:#86efac;border:1px solid rgba(34,197,94,0.7);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;transition:all 0.2s;letter-spacing:0.4px;text-transform:uppercase;box-shadow:0 8px 18px rgba(34,197,94,0.22)}
+#profileModal .profile-save-btn:hover{border-color:#22c55e;color:#eafff3;box-shadow:0 12px 26px rgba(34,197,94,0.35)}
+</style>
+<div id="profileModal" class="modal" onclick="closeProfileModalOnOutsideClick(event)">
+  <div class="modal-content profile-modal-content" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Настройки профиля</h2>
+      <button class="close-btn" onclick="closeProfileModal()">&times;</button>
+    </div>
+    <div class="profile-layout">
+      <div class="profile-avatar" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="8" r="4" /></svg>
+      </div>
+      <div>
+        <div class="profile-form-grid">
+          <div class="profile-field full">
+            <label class="profile-label" for="profileUserId">ID пользователя</label>
+            <input id="profileUserId" class="profile-input" type="text" readonly />
+          </div>
+          <div class="profile-field">
+            <label class="profile-label" for="profileLogin">Логин</label>
+            <input id="profileLogin" class="profile-input" type="text" placeholder="Введите логин" />
+          </div>
+          <div class="profile-field">
+            <label class="profile-label" for="profileName">Имя</label>
+            <input id="profileName" class="profile-input" type="text" placeholder="Введите имя" />
+          </div>
+          <div class="profile-field">
+            <label class="profile-label" for="profilePhone">Телефон</label>
+            <input id="profilePhone" class="profile-input" type="text" placeholder="Введите телефон" />
+          </div>
+          <div class="profile-field">
+            <label class="profile-label" for="profileEmail">Email</label>
+            <input id="profileEmail" class="profile-input" type="email" placeholder="Введите email" />
+          </div>
+        </div>
+        <div class="profile-actions">
+          <button type="button" class="profile-save-btn" onclick="saveProfile()">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>`;
+}
+
+function renderProfileScript() {
+  return `
+<script>
+function getProfileStorageKey(userId) {
+  return 'profileLocal:' + String(userId || 'anon');
+}
+
+function fillProfileForm(profile) {
+  var idEl = document.getElementById('profileUserId');
+  var loginEl = document.getElementById('profileLogin');
+  var nameEl = document.getElementById('profileName');
+  var phoneEl = document.getElementById('profilePhone');
+  var emailEl = document.getElementById('profileEmail');
+  if (idEl) idEl.value = profile.id || '';
+  if (loginEl) loginEl.value = profile.login || '';
+  if (nameEl) nameEl.value = profile.name || '';
+  if (phoneEl) phoneEl.value = profile.phone || '';
+  if (emailEl) emailEl.value = profile.email || '';
+}
+
+function getAuthTokenForProfile() {
+  var token = localStorage.getItem('authToken');
+  if (token) return token;
+  var match = document.cookie.match(/(?:^|;\\s*)authToken=([^;]+)/);
+  if (match && match[1]) {
+    token = decodeURIComponent(match[1]);
+    localStorage.setItem('authToken', token);
+    return token;
+  }
+  return '';
+}
+
+async function loadProfileData() {
+  var token = getAuthTokenForProfile();
+  if (!token) throw new Error('Необходима авторизация');
+  var res = await fetch('/api/profile', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  var data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Ошибка загрузки профиля');
+  var profile = data.profile || {};
+  var localData = {};
+  try {
+    localData = JSON.parse(localStorage.getItem(getProfileStorageKey(profile.id)) || '{}') || {};
+  } catch (_) {
+    localData = {};
+  }
+  return {
+    id: profile.id || '',
+    login: profile.username || '',
+    name: localData.name || '',
+    email: profile.email || '',
+    phone: localData.phone || '',
+    
+  };
+}
+
+async function openProfileModal() {
+  var modal = document.getElementById('profileModal');
+  if (!modal) return;
+  modal.classList.add('active');
+  try {
+    var profile = await loadProfileData();
+    fillProfileForm(profile);
+  } catch (err) {
+    alert('❌ ' + err.message);
+  }
+}
+
+function closeProfileModal() {
+  var modal = document.getElementById('profileModal');
+  if (modal) modal.classList.remove('active');
+}
+
+function closeProfileModalOnOutsideClick(event) {
+  if (event && event.target && event.target.id === 'profileModal') {
+    closeProfileModal();
+  }
+}
+
+async function saveProfile() {
+  var token = getAuthTokenForProfile();
+  if (!token) {
+    alert('❌ Необходима авторизация');
+    return;
+  }
+
+  var id = (document.getElementById('profileUserId') || {}).value || '';
+  var login = ((document.getElementById('profileLogin') || {}).value || '').trim();
+  var name = ((document.getElementById('profileName') || {}).value || '').trim();
+  var email = ((document.getElementById('profileEmail') || {}).value || '').trim();
+  var phone = ((document.getElementById('profilePhone') || {}).value || '').trim();
+
+  if (!login) {
+    alert('❌ Укажите логин');
+    return;
+  }
+
+  var res = await fetch('/api/profile', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: JSON.stringify({ username: login, email: email })
+  });
+
+  var data = await res.json();
+  if (!data.success) {
+    alert('❌ ' + (data.error || 'Ошибка сохранения'));
+    return;
+  }
+
+  var savedProfile = data.profile || {};
+  localStorage.setItem(getProfileStorageKey(savedProfile.id || id), JSON.stringify({
+    name: name,
+    phone: phone
+  }));
+  fillProfileForm({
+    id: savedProfile.id || id,
+    login: savedProfile.username || login,
+    name: name,
+    email: savedProfile.email || email,
+    phone: phone
+  });
+  alert('✅ Профиль сохранён');
+}
+</script>`;
+}
+
 // Страница анализа товаров (только для авторизованных)
 app.get('/products', requireAuth, (req, res) => {
   res.send(`<!doctype html>
@@ -1475,11 +2329,28 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
-.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30;margin-top:0}
 .sidebar-footer{margin-top:auto}
-.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
-.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(2,6,23,0.8);backdrop-filter:blur(6px);z-index:1000;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.modal.active{display:flex}
+.modal-content{background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.2);border-radius:16px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,0.5);max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);overflow:auto;margin:0 auto}
+.modal-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding-bottom:12px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,0.2)}
+.modal-header h2{margin:0;font-size:18px;font-weight:700;color:#f8fafc}
+.close-btn{background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);color:#e2e8f0;border-radius:10px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;transition:all 0.2s}
+.close-btn:hover{border-color:#38bdf8;color:#fff}
 .main{flex:1;min-width:0;position:relative;z-index:2}
 .sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
 .sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
@@ -1497,8 +2368,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
-  .layout{flex-direction:column}
-  .sidebar{width:100%;height:auto;position:relative;top:auto}
+  .layout{flex-direction:column;padding-left:0}
+  .sidebar{width:100%;height:auto;position:relative;left:auto;top:auto;bottom:auto;margin-top:0}
 }
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
@@ -1544,43 +2415,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .badge-warning{background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid rgba(245,158,11,0.35)}
 </style></head><body>
 <div class="layout">
-  <aside class="sidebar">
-    <div class="sidebar-top">
-      <div class="sidebar-top-icon">WB</div>
-    </div>
-    <a class="sidebar-link" href="/">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
-      </span>
-      <span class="sidebar-text">Главная</span>
-    </a>
-    <a class="sidebar-link" href="/fin-report">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
-      </span>
-      <span class="sidebar-text">Финансовый отчет</span>
-    </a>
-    <a class="sidebar-link" href="/products">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
-      </span>
-      <span class="sidebar-text">Анализ товаров</span>
-    </a>
-    <a class="sidebar-link" href="/stocks">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
-      </span>
-      <span class="sidebar-text">Управление остатками</span>
-    </a>
-    <div class="sidebar-footer">
-      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
-        <span class="sidebar-icon">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
-        </span>
-        <span class="sidebar-text">Выход</span>
-      </a>
-    </div>
-  </aside>
+  ${renderSidebar('/products')}
   <main class="main">
     <div class="container">
 <div class="header-bar">
@@ -1653,6 +2488,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 </div>
   </main>
 </div>
+${renderProfileModal()}
+${renderProfileScript()}
 <script>
 // Функция для чтения cookie
 function getCookie(name) {
@@ -2183,11 +3020,21 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
-.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30;margin-top:0}
 .sidebar-footer{margin-top:auto}
-.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
-.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
 .main{flex:1;min-width:0;position:relative;z-index:2}
 .sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
 .sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
@@ -2205,8 +3052,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
-  .layout{flex-direction:column}
-  .sidebar{width:100%;height:auto;position:relative;top:auto}
+  .layout{flex-direction:column;padding-left:0}
+  .sidebar{width:100%;height:auto;position:relative;left:auto;top:auto;bottom:auto;margin-top:0}
 }
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
 .brand{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:14px;border:1px solid rgba(148,163,184,0.18);background:rgba(15,23,42,0.8)}
@@ -2305,43 +3152,7 @@ input[type=number]{-moz-appearance:textfield}
 </head>
 <body>
 <div class="layout">
-  <aside class="sidebar">
-    <div class="sidebar-top">
-      <div class="sidebar-top-icon">WB</div>
-    </div>
-    <a class="sidebar-link" href="/">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
-      </span>
-      <span class="sidebar-text">Главная</span>
-    </a>
-    <a class="sidebar-link" href="/fin-report">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
-      </span>
-      <span class="sidebar-text">Финансовый отчет</span>
-    </a>
-    <a class="sidebar-link" href="/products">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
-      </span>
-      <span class="sidebar-text">Анализ товаров</span>
-    </a>
-    <a class="sidebar-link" href="/stocks">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
-      </span>
-      <span class="sidebar-text">Управление остатками</span>
-    </a>
-    <div class="sidebar-footer">
-      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
-        <span class="sidebar-icon">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
-        </span>
-        <span class="sidebar-text">Выход</span>
-      </a>
-    </div>
-  </aside>
+  ${renderSidebar('/')}
   <main class="main">
     <div class="container">
   <input type="date" id="cashDateFrom" style="display:none" />
@@ -2482,8 +3293,23 @@ input[type=number]{-moz-appearance:textfield}
               <div class="filter-item" data-value="payable" onclick="setDebtTypeFilter('payable')">Мы должны</div>
             </div>
           </div>
+          <div class="filter-menu">
+            <button id="cashDebtCounterpartyFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtCounterpartyMenu(event)">Все контрагенты</button>
+            <div id="cashDebtCounterpartyMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all">Все контрагенты</div>
+            </div>
+          </div>
+          <div class="filter-menu">
+            <button id="cashDebtBusinessFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtBusinessMenu(event)">Все магазины</button>
+            <div id="cashDebtBusinessMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all">Все магазины</div>
+            </div>
+          </div>
         </div>
-        <button id="cashDebtBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedCashDebts()" disabled>Удалить выбранные</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button id="cashDebtExportBtn" class="api-btn" style="padding:6px 10px" onclick="exportCashDebtOperationsToExcel()">Скачать Excel</button>
+          <button id="cashDebtBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedCashDebts()" disabled>Удалить выбранные</button>
+        </div>
       </div>
       <div style="max-height:50vh;overflow:auto">
         <table class="cash-table">
@@ -2683,6 +3509,8 @@ input[type=number]{-moz-appearance:textfield}
     </div>
   </main>
 </div>
+
+${renderProfileModal()}
 
 <!-- Модалка: операции долга -->
 <div id="debtOperationsModal" class="modal" onclick="closeDebtOperationsModal()">
@@ -3048,6 +3876,7 @@ input[type=number]{-moz-appearance:textfield}
   </div>
 </div>
 
+${renderProfileScript()}
 <script>
 let businesses = [];
 let cashTransactions = [];
@@ -4820,27 +5649,101 @@ function getDebtOperationLabel(item) {
 function getDebtOperationsFilterValues() {
   const operationValue = localStorage.getItem('cashDebtOperationFilter') || 'all';
   const typeValue = localStorage.getItem('cashDebtTypeFilter') || 'all';
-  return { operationValue, typeValue };
+  const counterpartyValue = localStorage.getItem('cashDebtCounterpartyFilter') || 'all';
+  const businessValue = localStorage.getItem('cashDebtBusinessFilter') || 'all';
+  return { operationValue, typeValue, counterpartyValue, businessValue };
 }
 
 function restoreDebtOperationsFilters() {
   localStorage.setItem('cashDebtOperationFilter', 'all');
   localStorage.setItem('cashDebtTypeFilter', 'all');
+  localStorage.setItem('cashDebtCounterpartyFilter', 'all');
+  localStorage.setItem('cashDebtBusinessFilter', 'all');
+  rebuildDebtCounterpartyMenu();
+  rebuildDebtBusinessMenu();
   updateDebtFilterButtons();
+}
+
+function rebuildDebtCounterpartyMenu() {
+  const menu = document.getElementById('cashDebtCounterpartyMenu');
+  if (!menu) return;
+  const uniqueCounterparties = Array.from(new Set(
+    (cashDebts || []).map(item => String(item && item.counterparty ? item.counterparty : '').trim()).filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const html = ['<div class="filter-item" data-value="all">Все контрагенты</div>'];
+  uniqueCounterparties.forEach(name => {
+    const safeName = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');
+    html.push('<div class="filter-item" data-value="' + safeName + '">' + safeName + '</div>');
+  });
+  menu.innerHTML = html.join('');
+  menu.querySelectorAll('.filter-item').forEach(item => {
+    item.addEventListener('click', () => {
+      setDebtCounterpartyFilter(item.dataset.value || 'all');
+    });
+  });
+}
+
+function rebuildDebtBusinessMenu() {
+  const menu = document.getElementById('cashDebtBusinessMenu');
+  if (!menu) return;
+
+  const uniqueBusinessIds = Array.from(new Set(
+    (cashDebts || [])
+      .map(item => (item && item.business_id != null ? String(item.business_id) : '__none__'))
+  ));
+
+  const html = ['<div class="filter-item" data-value="all">Все магазины</div>'];
+  uniqueBusinessIds.forEach(idValue => {
+    if (idValue === 'all') return;
+    const label = idValue === '__none__' ? 'Без магазина' : getBusinessNameById(Number(idValue));
+    const safeLabel = String(label || 'Без магазина')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    html.push('<div class="filter-item" data-value="' + idValue + '">' + safeLabel + '</div>');
+  });
+
+  menu.innerHTML = html.join('');
+  menu.querySelectorAll('.filter-item').forEach(item => {
+    item.addEventListener('click', () => {
+      setDebtBusinessFilter(item.dataset.value || 'all');
+    });
+  });
 }
 
 function updateDebtFilterButtons() {
   const operationBtn = document.getElementById('cashDebtOperationFilterBtn');
   const typeBtn = document.getElementById('cashDebtTypeFilterBtn');
+  const counterpartyBtn = document.getElementById('cashDebtCounterpartyFilterBtn');
+  const businessBtn = document.getElementById('cashDebtBusinessFilterBtn');
   const operationMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
   const operationValue = localStorage.getItem('cashDebtOperationFilter') || 'all';
   const typeValue = localStorage.getItem('cashDebtTypeFilter') || 'all';
+  const counterpartyValue = localStorage.getItem('cashDebtCounterpartyFilter') || 'all';
+  const businessValue = localStorage.getItem('cashDebtBusinessFilter') || 'all';
   if (operationBtn) {
     operationBtn.textContent = operationValue === 'increase' ? 'Начисления' : operationValue === 'decrease' ? 'Погашения' : 'Все операции';
   }
   if (typeBtn) {
     typeBtn.textContent = typeValue === 'receivable' ? 'Нам должны' : typeValue === 'payable' ? 'Мы должны' : 'Все типы';
+  }
+  if (counterpartyBtn) {
+    counterpartyBtn.textContent = counterpartyValue === 'all' ? 'Все контрагенты' : counterpartyValue;
+  }
+  if (businessBtn) {
+    if (businessValue === 'all') {
+      businessBtn.textContent = 'Все магазины';
+    } else if (businessValue === '__none__') {
+      businessBtn.textContent = 'Без магазина';
+    } else {
+      businessBtn.textContent = getBusinessNameById(Number(businessValue));
+    }
   }
   if (operationMenu) {
     operationMenu.querySelectorAll('.filter-item').forEach(item => {
@@ -4852,13 +5755,27 @@ function updateDebtFilterButtons() {
       item.classList.toggle('active', item.dataset.value === typeValue);
     });
   }
+  if (counterpartyMenu) {
+    counterpartyMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === counterpartyValue);
+    });
+  }
+  if (businessMenu) {
+    businessMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === businessValue);
+    });
+  }
 }
 
 function toggleDebtOperationMenu(event) {
   if (event) event.stopPropagation();
   const menu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
   if (typeMenu) typeMenu.classList.remove('open');
+  if (counterpartyMenu) counterpartyMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
   if (menu) menu.classList.toggle('open');
 }
 
@@ -4866,7 +5783,35 @@ function toggleDebtTypeMenu(event) {
   if (event) event.stopPropagation();
   const menu = document.getElementById('cashDebtTypeMenu');
   const opMenu = document.getElementById('cashDebtOperationMenu');
+  const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
   if (opMenu) opMenu.classList.remove('open');
+  if (counterpartyMenu) counterpartyMenu.classList.remove('open');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  if (businessMenu) businessMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleDebtCounterpartyMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('cashDebtCounterpartyMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  if (opMenu) opMenu.classList.remove('open');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleDebtBusinessMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('cashDebtBusinessMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  if (opMenu) opMenu.classList.remove('open');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (counterpartyMenu) counterpartyMenu.classList.remove('open');
   if (menu) menu.classList.toggle('open');
 }
 
@@ -4886,9 +5831,27 @@ function setDebtTypeFilter(value) {
   renderCashDebts();
 }
 
+function setDebtCounterpartyFilter(value) {
+  localStorage.setItem('cashDebtCounterpartyFilter', value || 'all');
+  const menu = document.getElementById('cashDebtCounterpartyMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtFilterButtons();
+  renderCashDebts();
+}
+
+function setDebtBusinessFilter(value) {
+  localStorage.setItem('cashDebtBusinessFilter', value || 'all');
+  const menu = document.getElementById('cashDebtBusinessMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtFilterButtons();
+  renderCashDebts();
+}
+
 document.addEventListener('click', (event) => {
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
   const stocksMenu = document.getElementById('cashStocksBusinessMenu');
   const stocksBtn = document.getElementById('cashStocksBusinessBtn');
   if (stocksMenu && (stocksMenu.contains(event.target) || (stocksBtn && stocksBtn.contains(event.target)))) {
@@ -4896,14 +5859,21 @@ document.addEventListener('click', (event) => {
   }
   if (opMenu) opMenu.classList.remove('open');
   if (typeMenu) typeMenu.classList.remove('open');
+  if (counterpartyMenu) counterpartyMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
   if (stocksMenu) stocksMenu.classList.remove('open');
 });
 
 function applyDebtOperationsFilters(items) {
-  const { operationValue, typeValue } = getDebtOperationsFilterValues();
+  const { operationValue, typeValue, counterpartyValue, businessValue } = getDebtOperationsFilterValues();
   return items.filter(item => {
     if (operationValue !== 'all' && getDebtOperationKey(item) !== operationValue) return false;
     if (typeValue !== 'all' && item.debt_type !== typeValue) return false;
+    if (counterpartyValue !== 'all' && String(item.counterparty || '') !== counterpartyValue) return false;
+    if (businessValue !== 'all') {
+      const itemBusiness = item && item.business_id != null ? String(item.business_id) : '__none__';
+      if (itemBusiness !== businessValue) return false;
+    }
     return true;
   });
 }
@@ -5022,6 +5992,91 @@ async function deleteSelectedCashDebts() {
   } catch (err) {
     alert('❌ ' + err.message);
   }
+}
+
+function exportCashDebtOperationsToExcel() {
+  if (!Array.isArray(cashDebts) || !cashDebts.length) {
+    alert('❌ Нет данных для экспорта');
+    return;
+  }
+
+  const selectedIds = new Set(
+    Array.from(document.querySelectorAll('#cashDebtsBody .cash-debt-checkbox:checked'))
+      .map(cb => Number(cb.dataset.id))
+      .filter(id => Number.isFinite(id))
+  );
+
+  const sortedDebts = applyDebtOperationsFilters([...cashDebts]).sort((a, b) => {
+    const dateA = new Date(a.debt_date || 0);
+    const dateB = new Date(b.debt_date || 0);
+    return dateB - dateA;
+  });
+
+  const rowsToExport = selectedIds.size
+    ? sortedDebts.filter(item => selectedIds.has(Number(item.id)))
+    : sortedDebts;
+
+  if (!rowsToExport.length) {
+    alert('❌ Нет данных для экспорта по текущим фильтрам/выбору');
+    return;
+  }
+
+  function escapeExcelHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;');
+  }
+
+  const tableRows = rowsToExport.map(item => {
+    const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
+    const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
+    const amount = Number(item.amount || 0);
+    const isPayment = amount < 0;
+    const displayAmount = (isPayment ? '-' : '+') + formatMoney(Math.abs(amount));
+    const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
+    const operationTypeLabel = getDebtOperationLabel(item);
+    const businessName = getBusinessNameById(item.business_id);
+
+    return '<tr>'
+      + '<td>' + escapeExcelHtml(debtDate) + '</td>'
+      + '<td>' + escapeExcelHtml(typeLabel) + '</td>'
+      + '<td>' + escapeExcelHtml(operationTypeLabel) + '</td>'
+      + '<td>' + escapeExcelHtml(displayAmount) + '</td>'
+      + '<td>' + escapeExcelHtml(item.counterparty || '—') + '</td>'
+      + '<td>' + escapeExcelHtml(dueDate) + '</td>'
+      + '<td>' + escapeExcelHtml(businessName || '—') + '</td>'
+      + '<td>' + escapeExcelHtml(item.note || '—') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  const workbookHtml = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">'
+    + '<head><meta charset="utf-8"></head><body>'
+    + '<table border="1">'
+    + '<tr>'
+    + '<th>Дата операции</th>'
+    + '<th>Тип</th>'
+    + '<th>Операция</th>'
+    + '<th>Сумма</th>'
+    + '<th>Контрагент</th>'
+    + '<th>Срок</th>'
+    + '<th>Магазин</th>'
+    + '<th>Комментарий</th>'
+    + '</tr>'
+    + tableRows
+    + '</table>'
+    + '</body></html>';
+
+  const blob = new Blob(['\uFEFF' + workbookHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0, 10);
+  link.download = 'debt-operations-' + date + '.xls';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
 }
 
 function addCashDebt() {
@@ -5250,11 +6305,21 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
-.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30;margin-top:0}
 .sidebar-footer{margin-top:auto}
-.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
-.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
 .main{flex:1;min-width:0;position:relative;z-index:2}
 .sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
 .sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
@@ -5314,50 +6379,17 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .modal-header h2{margin:0;font-size:18px;font-weight:700;color:#f8fafc}
 .close-btn{background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);color:#e2e8f0;border-radius:10px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;transition:all 0.2s}
 .close-btn:hover{border-color:#38bdf8;color:#fff}
+.cash-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px}
+.cash-input{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
+.cash-input:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
 h1{margin:0;font-size:24px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
 @media (max-width: 900px){
-  .layout{flex-direction:column}
-  .sidebar{width:100%;height:auto;position:relative;top:auto}
+  .layout{flex-direction:column;padding-left:0}
+  .sidebar{width:100%;height:auto;position:relative;left:auto;top:auto;bottom:auto;margin-top:0}
 }
 </style></head><body>
 <div class="layout">
-  <aside class="sidebar">
-    <div class="sidebar-top">
-      <div class="sidebar-top-icon">WB</div>
-    </div>
-    <a class="sidebar-link" href="/">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
-      </span>
-      <span class="sidebar-text">Главная</span>
-    </a>
-    <a class="sidebar-link" href="/fin-report">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
-      </span>
-      <span class="sidebar-text">Финансовый отчет</span>
-    </a>
-    <a class="sidebar-link" href="/products">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
-      </span>
-      <span class="sidebar-text">Анализ товаров</span>
-    </a>
-    <a class="sidebar-link" href="/stocks">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
-      </span>
-      <span class="sidebar-text">Управление остатками</span>
-    </a>
-    <div class="sidebar-footer">
-      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
-        <span class="sidebar-icon">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
-        </span>
-        <span class="sidebar-text">Выход</span>
-      </a>
-    </div>
-  </aside>
+  ${renderSidebar('/stocks')}
   <main class="main">
     <div class="container">
       <div class="section">
@@ -5410,6 +6442,7 @@ h1{margin:0;font-size:24px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
     </div>
   </main>
 </div>
+${renderProfileModal()}
 <div id="stocksCostModal" class="modal" onclick="closeStocksCostModal()">
   <div class="modal-content" onclick="event.stopPropagation()">
     <div class="modal-header">
@@ -5419,6 +6452,7 @@ h1{margin:0;font-size:24px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
     <p class="cash-muted">Раздел в разработке. Пока себестоимость отображается в таблице, если она задана.</p>
   </div>
 </div>
+${renderProfileScript()}
 <script>
 var businesses = [];
 var stocksItems = [];
@@ -5705,6 +6739,514 @@ loadBusinesses();
 </body></html>`);
 });
 
+// Отдельная страница отгрузок (пошаговый процесс)
+app.get('/shipments', requireAuth, (req, res) => {
+  res.send(`<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>WB Helper - Отгрузки</title>
+<style>
+*{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(2,6,23,0.8);backdrop-filter:blur(6px);z-index:1000;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.modal.active{display:flex}
+.modal-content{background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.2);border-radius:16px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,0.5);max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);overflow:auto;margin:0 auto}
+.modal-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding-bottom:12px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,0.2)}
+.modal-header h2{margin:0;font-size:18px;font-weight:700;color:#f8fafc}
+.close-btn{background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);color:#e2e8f0;border-radius:10px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;transition:all 0.2s}
+.close-btn:hover{border-color:#38bdf8;color:#fff}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
+.sidebar-footer{margin-top:auto}
+.main{flex:1;min-width:0}
+.container{width:100%;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:24px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+.section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:14px 16px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:14px;position:relative;overflow:visible}
+.section h2{margin:0 0 12px;font-size:16px}
+.step{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+.step-index{width:24px;height:24px;border-radius:999px;background:rgba(56,189,248,0.2);display:inline-flex;align-items:center;justify-content:center;font-weight:800}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;position:relative;z-index:40}
+.api-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;background:transparent;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer;position:relative;z-index:45;pointer-events:auto}
+.api-btn.primary{background:rgba(34,197,94,0.18);border-color:rgba(34,197,94,0.7);color:#86efac}
+.api-btn.danger{background:rgba(239,68,68,0.14);border-color:rgba(239,68,68,0.5);color:#fecaca}
+.cash-input{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0;position:relative;z-index:30}
+.cash-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;position:relative;z-index:20}
+.table-wrap{max-height:32vh;overflow:auto;border:1px solid rgba(148,163,184,0.2);border-radius:10px;position:relative;z-index:1}
+.cash-table{width:100%;border-collapse:collapse}
+.cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:8px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:2}
+.cash-table td{padding:8px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.cash-muted{color:#94a3b8;font-size:12px}
+.chip{display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;background:rgba(56,189,248,0.15);color:#7dd3fc;font-weight:700}
+@media (max-width: 900px){.layout{flex-direction:column;padding-left:0}.sidebar{width:100%;height:auto;position:relative}.grid{grid-template-columns:1fr}}
+</style></head><body>
+<div class="layout">
+  ${renderSidebar('/shipments')}
+  <main class="main">
+    <div class="container">
+      <div class="section">
+        <div class="toolbar" style="justify-content:space-between"><h1 style="margin:0;font-size:24px">Отгрузки (пошагово)</h1><button id="btnRefreshShipments" type="button" class="api-btn" onclick="bootstrapAll()">Обновить</button></div>
+      </div>
+
+      <div class="section">
+        <div class="step"><span class="step-index">1</span><h2>Создать / выбрать поставку</h2></div>
+        <div class="grid">
+          <div><div class="cash-label">Источник</div><select id="sourceSelect" class="cash-input"></select></div>
+          <div class="toolbar"><button id="btnCreateSource" type="button" class="api-btn" onclick="createSource()">+ Источник</button><button id="btnDeleteSource" type="button" class="api-btn danger" onclick="deleteSource()">Удалить источник</button></div>
+          <button id="btnCreateShipment" type="button" class="api-btn primary" onclick="createShipment()">Создать поставку</button>
+        </div>
+        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>Поставка</th><th>Источник</th><th>Статус</th><th>Складов</th><th></th></tr></thead><tbody id="shipmentsBody"></tbody></table></div>
+        <div class="cash-muted" style="margin-top:8px">Активная поставка: <span id="activeShipmentLabel">—</span></div>
+      </div>
+
+      <div class="section">
+        <div class="step"><span class="step-index">2</span><h2>Склады: список и добавление в поставку</h2></div>
+        <div class="cash-muted" style="margin:0 0 10px">1) «+ Пополнить список складов» добавляет склад только в общий список. 2) «Добавить выбранный в поставку» добавляет в активную поставку только выбранный склад из списка.</div>
+        <div class="grid">
+          <div><div class="cash-label">Склад WB</div><select id="warehouseSelect" class="cash-input"></select></div>
+          <div class="toolbar"><button id="btnCreateWarehouse" type="button" class="api-btn" onclick="createWarehouse()">+ Пополнить список складов</button><button id="btnDeleteWarehouse" type="button" class="api-btn danger" onclick="deleteWarehouse()">Удалить из списка</button></div>
+          <button id="btnAttachWarehouse" type="button" class="api-btn primary" onclick="attachWarehouseToShipment()">Добавить выбранный в поставку</button>
+        </div>
+        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>Склад</th><th>WB code</th><th></th><th></th></tr></thead><tbody id="shipmentWarehousesBody"></tbody></table></div>
+        <div class="cash-muted" style="margin-top:8px">Активный склад в поставке: <span id="activeShipmentWarehouseLabel">—</span></div>
+      </div>
+
+      <div class="section">
+        <div class="step"><span class="step-index">3</span><h2>Короба внутри выбранного склада</h2></div>
+        <div class="toolbar"><button id="btnCreateBox" type="button" class="api-btn primary" onclick="createBox()">+ Новый короб</button></div>
+        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>Короб</th><th>Создан</th><th></th><th></th></tr></thead><tbody id="boxesBody"></tbody></table></div>
+        <div class="cash-muted" style="margin-top:8px">Активный короб: <span id="activeBoxLabel">—</span></div>
+      </div>
+
+      <div class="section">
+        <div class="step"><span class="step-index">4</span><h2>Сканирование в выбранный короб</h2></div>
+        <div class="grid"><div><div class="cash-label">Штрихкод</div><input id="scanBarcodeInput" class="cash-input" type="text" placeholder="Сканируй и Enter" /></div><div></div><button id="btnUndoLastScan" type="button" class="api-btn" onclick="undoLastScan()">Отменить последний скан</button></div>
+        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>ШК</th><th>Короб</th><th>Время</th><th>Кто</th><th></th></tr></thead><tbody id="scanEventsBody"></tbody></table></div>
+      </div>
+    </div>
+  </main>
+</div>
+${renderProfileModal()}
+${renderProfileScript()}
+<script>
+var fboSources=[], fboWarehouses=[], fboShipments=[], fboShipmentWarehouses=[], fboBoxes=[], fboRecentScans=[];
+var activeShipmentId=null, activeShipmentWarehouseId=null, activeBoxId=null;
+
+function escapeHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function formatDate(v){if(!v) return '—'; var d=new Date(v); return isNaN(d.getTime())?String(v):d.toLocaleString('ru-RU');}
+function authHeaders(json){
+  var token = localStorage.getItem('authToken');
+  if (!token) {
+    var m = document.cookie.match(/(?:^|;\s*)authToken=([^;]+)/);
+    if (m && m[1]) {
+      token = decodeURIComponent(m[1]);
+      localStorage.setItem('authToken', token);
+    }
+  }
+  var h = token ? { 'Authorization': 'Bearer ' + token } : {};
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+}
+async function apiRequest(p, options){
+  try {
+    var opts = options || {};
+    var res = await fetch(p, Object.assign({ credentials: 'same-origin' }, opts));
+    var ct = (res.headers.get('content-type') || '').toLowerCase();
+    var payload;
+    if (ct.indexOf('application/json') !== -1) {
+      payload = await res.json();
+    } else {
+      await res.text();
+      payload = { success: false, error: res.status === 401 ? 'Необходима авторизация' : ('HTTP ' + res.status) };
+    }
+    if (!res.ok) {
+      if (!payload || typeof payload !== 'object') payload = { success: false };
+      payload.success = false;
+      if (!payload.error) payload.error = 'HTTP ' + res.status;
+    }
+    return payload;
+  } catch (e) {
+    return { success: false, error: (e && e.message) ? e.message : 'Сетевая ошибка' };
+  }
+}
+async function apiGet(p){return apiRequest(p,{headers:authHeaders(false)});}
+async function apiPost(p,b){return apiRequest(p,{method:'POST',headers:authHeaders(true),body:JSON.stringify(b||{})});}
+async function apiDelete(p){return apiRequest(p,{method:'DELETE',headers:authHeaders(false)});}
+
+function setActiveShipment(id){activeShipmentId=id||null;activeShipmentWarehouseId=null;activeBoxId=null;document.getElementById('activeShipmentLabel').textContent=id?('#'+id):'—';document.getElementById('activeShipmentWarehouseLabel').textContent='—';document.getElementById('activeBoxLabel').textContent='—';loadShipmentWarehouses();renderScans();}
+function setActiveShipmentWarehouse(id,label){activeShipmentWarehouseId=id||null;activeBoxId=null;document.getElementById('activeShipmentWarehouseLabel').textContent=label||'—';document.getElementById('activeBoxLabel').textContent='—';loadBoxes();}
+function setActiveBox(id,label){activeBoxId=id||null;document.getElementById('activeBoxLabel').textContent=label||'—';loadRecentScans();}
+
+async function loadSources(){const d=await apiGet('/api/fbo/sources');fboSources=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('sourceSelect');s.innerHTML=fboSources.length?fboSources.map(i=>'<option value="'+i.id+'">'+escapeHtml(i.name)+'</option>').join(''):'<option value="">Нет источников</option>';}
+async function loadWarehouses(){const d=await apiGet('/api/fbo/warehouses');fboWarehouses=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('warehouseSelect');s.innerHTML=fboWarehouses.length?fboWarehouses.map(i=>'<option value="'+i.id+'">'+escapeHtml(i.name)+'</option>').join(''):'<option value="">Нет складов</option>';}
+async function loadShipments(){const d=await apiGet('/api/fbo/shipments');fboShipments=(d&&d.success&&Array.isArray(d.items))?d.items:[];var b=document.getElementById('shipmentsBody');if(!fboShipments.length){b.innerHTML='<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:10px">Поставок нет</td></tr>';return;}b.innerHTML=fboShipments.map(i=>'<tr><td>'+escapeHtml(i.public_id||('#'+i.id))+'</td><td>'+escapeHtml(i.source_name||'—')+'</td><td><span class="chip">'+escapeHtml(i.status||'draft')+'</span></td><td>'+escapeHtml(i.warehouses_count||0)+'</td><td class="toolbar"><button class="api-btn" onclick="setActiveShipment('+i.id+')">Выбрать</button><button class="api-btn danger" onclick="deleteShipment('+i.id+')">Удалить</button></td></tr>').join('');if(!activeShipmentId&&fboShipments.length)setActiveShipment(fboShipments[0].id);}
+async function loadShipmentWarehouses(){var b=document.getElementById('shipmentWarehousesBody');if(!activeShipmentId){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Сначала выбери поставку</td></tr>';fboShipmentWarehouses=[];return;}const d=await apiGet('/api/fbo/shipments/'+activeShipmentId+'/warehouses');fboShipmentWarehouses=(d&&d.success&&Array.isArray(d.items))?d.items:[];if(!fboShipmentWarehouses.length){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Складов в поставке нет</td></tr>';return;}b.innerHTML=fboShipmentWarehouses.map(i=>'<tr><td>'+escapeHtml(i.warehouse_name||'—')+'</td><td>'+escapeHtml(i.wb_code||'—')+'</td><td><button class="api-btn" onclick="setActiveShipmentWarehouse('+i.id+',\\''+escapeHtml(i.warehouse_name||('ID '+i.warehouse_id))+'\\')">Выбрать</button></td><td><button class="api-btn danger" onclick="removeShipmentWarehouse('+i.id+')">Удалить</button></td></tr>').join('');if(!activeShipmentWarehouseId&&fboShipmentWarehouses.length){var first=fboShipmentWarehouses[0];setActiveShipmentWarehouse(first.id, first.warehouse_name||('ID '+first.warehouse_id));}}
+async function loadBoxes(){var b=document.getElementById('boxesBody');if(!activeShipmentWarehouseId){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Сначала выбери склад в поставке</td></tr>';fboBoxes=[];renderScans();return;}const d=await apiGet('/api/fbo/boxes?shipmentWarehouseId='+activeShipmentWarehouseId);fboBoxes=(d&&d.success&&Array.isArray(d.items))?d.items:[];if(!fboBoxes.length){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Коробов нет</td></tr>';renderScans();return;}b.innerHTML=fboBoxes.map(i=>'<tr><td>Короб №'+escapeHtml(i.box_no)+'</td><td>'+escapeHtml(formatDate(i.created_at))+'</td><td><button class="api-btn" onclick="setActiveBox('+i.id+',\\'Короб №'+escapeHtml(i.box_no)+'\\')">Выбрать</button></td><td><button class="api-btn danger" onclick="deleteBox('+i.id+')">Удалить</button></td></tr>').join('');if(!activeBoxId&&fboBoxes.length){var first=fboBoxes[0];setActiveBox(first.id,'Короб №'+first.box_no);}else{loadRecentScans();}}
+async function loadRecentScans(){if(!activeShipmentId){fboRecentScans=[];renderScans();return;}const d=await apiGet('/api/fbo/scans/recent?shipmentId='+activeShipmentId);fboRecentScans=(d&&d.success&&Array.isArray(d.items))?d.items:[];renderScans();}
+function renderScans(){var b=document.getElementById('scanEventsBody');if(!activeShipmentId){b.innerHTML='<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:10px">Выбери поставку</td></tr>';return;}if(!fboRecentScans.length){b.innerHTML='<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:10px">Сканов нет</td></tr>';return;}b.innerHTML=fboRecentScans.map(i=>'<tr><td>'+escapeHtml(i.barcode)+'</td><td>'+escapeHtml(i.box_no?('Короб №'+i.box_no):('ID '+i.box_id))+'</td><td>'+escapeHtml(formatDate(i.created_at))+'</td><td>'+escapeHtml(i.created_by_user_id)+'</td><td><button class="api-btn danger" onclick="deleteScan('+i.id+')">Удалить</button></td></tr>').join('');}
+
+async function createSource(){var n=prompt('Название источника');if(!n||!n.trim())return;const d=await apiPost('/api/fbo/sources',{name:n.trim()});if(!d||!d.success)return alert((d&&d.error)||'Ошибка');await loadSources();}
+async function deleteSource(){var id=parseInt(document.getElementById('sourceSelect').value||'0',10);if(!id)return alert('Выбери источник');if(!confirm('Удалить источник?'))return;const d=await apiDelete('/api/fbo/sources/'+id);if(!d.success)return alert(d.error||'Ошибка');await loadSources();}
+async function createWarehouse(){var n=prompt('Название склада WB (добавится только в общий список)');if(!n||!n.trim())return;const d=await apiPost('/api/fbo/warehouses',{name:n.trim()});if(!d||!d.success)return alert((d&&d.error)||'Ошибка');await loadWarehouses();}
+async function deleteWarehouse(){var id=parseInt(document.getElementById('warehouseSelect').value||'0',10);if(!id)return alert('Выбери склад');if(!confirm('Удалить склад?'))return;const d=await apiDelete('/api/fbo/warehouses/'+id);if(!d.success)return alert(d.error||'Ошибка');await loadWarehouses();}
+async function createShipment(){var sourceId=parseInt(document.getElementById('sourceSelect').value||'0',10);if(!sourceId)return alert('Выбери источник');const d=await apiPost('/api/fbo/shipments',{source_id:sourceId});if(!d.success)return alert(d.error||'Ошибка');await loadShipments();if(d.item&&d.item.id)setActiveShipment(d.item.id);}
+async function deleteShipment(id){if(!confirm('Удалить поставку?'))return;const d=await apiDelete('/api/fbo/shipments/'+id);if(!d.success)return alert(d.error||'Ошибка');if(activeShipmentId===id)setActiveShipment(null);await loadShipments();}
+async function attachWarehouseToShipment(){if(!activeShipmentId)return alert('Сначала выбери поставку');var warehouseId=parseInt(document.getElementById('warehouseSelect').value||'0',10);if(!warehouseId)return alert('Выбери склад из списка');if(!Array.isArray(fboWarehouses)||!fboWarehouses.some(function(w){return Number(w.id)===warehouseId;}))return alert('Можно добавить только склад из списка');const d=await apiPost('/api/fbo/shipments/'+activeShipmentId+'/warehouses',{warehouse_id:warehouseId});if(!d.success)return alert(d.error||'Ошибка');await loadShipmentWarehouses();await loadShipments();}
+async function removeShipmentWarehouse(id){if(!confirm('Удалить склад из поставки?'))return;const d=await apiDelete('/api/fbo/shipment-warehouses/'+id);if(!d.success)return alert(d.error||'Ошибка');if(activeShipmentWarehouseId===id){activeShipmentWarehouseId=null;activeBoxId=null;}await loadShipmentWarehouses();await loadShipments();}
+async function createBox(){if(!activeShipmentWarehouseId)return alert('Сначала выбери склад в поставке');const d=await apiPost('/api/fbo/boxes',{shipment_warehouse_id:activeShipmentWarehouseId});if(!d.success)return alert(d.error||'Ошибка');await loadBoxes();}
+async function deleteBox(id){if(!confirm('Удалить короб?'))return;const d=await apiDelete('/api/fbo/boxes/'+id);if(!d.success)return alert(d.error||'Ошибка');if(activeBoxId===id)activeBoxId=null;await loadBoxes();}
+async function deleteScan(id){if(!confirm('Удалить скан?'))return;const d=await apiDelete('/api/fbo/scans/'+id);if(!d.success)return alert(d.error||'Ошибка');await loadRecentScans();}
+async function undoLastScan(){if(!activeShipmentId)return alert('Выбери поставку');const d=await apiPost('/api/fbo/scans/undo-last',{shipment_id:activeShipmentId});if(!d.success)return alert(d.error||'Ошибка');await loadRecentScans();}
+
+function bindShipmentsActions(){
+  var map = [
+    ['btnRefreshShipments', bootstrapAll],
+    ['btnCreateSource', createSource],
+    ['btnDeleteSource', deleteSource],
+    ['btnCreateShipment', createShipment],
+    ['btnCreateWarehouse', createWarehouse],
+    ['btnDeleteWarehouse', deleteWarehouse],
+    ['btnAttachWarehouse', attachWarehouseToShipment],
+    ['btnCreateBox', createBox],
+    ['btnUndoLastScan', undoLastScan]
+  ];
+  map.forEach(function(item){
+    var el = document.getElementById(item[0]);
+    if (!el || typeof item[1] !== 'function') return;
+    if (el.dataset.boundClick === '1') return;
+    el.dataset.boundClick = '1';
+    el.removeAttribute('onclick');
+    el.addEventListener('click', function(ev){
+      ev.preventDefault();
+      item[1]();
+    });
+  });
+}
+
+window.createSource = createSource;
+window.deleteSource = deleteSource;
+window.createWarehouse = createWarehouse;
+window.deleteWarehouse = deleteWarehouse;
+window.createShipment = createShipment;
+window.deleteShipment = deleteShipment;
+window.attachWarehouseToShipment = attachWarehouseToShipment;
+window.removeShipmentWarehouse = removeShipmentWarehouse;
+window.createBox = createBox;
+window.deleteBox = deleteBox;
+window.deleteScan = deleteScan;
+window.undoLastScan = undoLastScan;
+window.setActiveShipment = setActiveShipment;
+window.setActiveShipmentWarehouse = setActiveShipmentWarehouse;
+window.setActiveBox = setActiveBox;
+
+document.getElementById('scanBarcodeInput').addEventListener('keydown', async function(e){if(e.key!=='Enter')return; e.preventDefault(); var barcode=String(e.target.value||'').trim(); if(!barcode)return; if(!activeShipmentId)return alert('Сначала выбери поставку'); if(!activeShipmentWarehouseId)return alert('Сначала выбери склад в поставке'); if(!activeBoxId)return alert('Сначала выбери короб'); var d=await apiPost('/api/fbo/scans',{shipment_id:activeShipmentId,box_id:activeBoxId,barcode:barcode}); if(!d.success)return alert(d.error||'Ошибка'); e.target.value=''; await loadRecentScans();});
+
+async function bootstrapAll(){await loadSources();await loadWarehouses();await loadShipments();if(activeShipmentId){await loadShipmentWarehouses();if(activeShipmentWarehouseId){await loadBoxes();}else{renderScans();}}}
+bindShipmentsActions();
+bootstrapAll();
+</script>
+</body></html>`);
+});
+
+// Отдельная страница отгрузок 2 (альтернативный интерфейс в текущем стиле)
+app.get('/shipments-2', requireAuth, async (req, res) => {
+  try {
+    const { data: existingShipments, error: shipmentsError } = await supabase
+      .from('fbo_shipments')
+      .select('id')
+      .eq('account_id', req.account.id)
+      .limit(1);
+    if (!shipmentsError && (!existingShipments || existingShipments.length === 0)) {
+      const { data: source, error: sourceError } = await supabase
+        .from('fbo_sources')
+        .insert({
+          account_id: req.account.id,
+          name: 'Тестовый источник (shipments-2)',
+          created_by_user_id: req.account.id
+        })
+        .select('id')
+        .single();
+      if (sourceError) throw sourceError;
+
+      const { data: warehouse, error: warehouseError } = await supabase
+        .from('fbo_warehouses')
+        .insert({
+          account_id: req.account.id,
+          name: 'Тестовый склад (shipments-2)',
+          wb_code: 'TEST-WH',
+          created_by_user_id: req.account.id
+        })
+        .select('id')
+        .single();
+      if (warehouseError) throw warehouseError;
+
+      const { data: shipment, error: shipmentError } = await supabase
+        .from('fbo_shipments')
+        .insert({
+          account_id: req.account.id,
+          source_id: source.id,
+          created_by_user_id: req.account.id
+        })
+        .select('id')
+        .single();
+      if (shipmentError) throw shipmentError;
+
+      const { error: linkError } = await supabase
+        .from('fbo_shipment_warehouses')
+        .insert({
+          shipment_id: shipment.id,
+          warehouse_id: warehouse.id,
+          created_by_user_id: req.account.id
+        });
+      if (linkError) throw linkError;
+    }
+  } catch (seedError) {
+    console.warn('shipments-2 seed warning:', seedError && seedError.message ? seedError.message : seedError);
+  }
+
+  res.send(`<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>WB Helper - Отгрузки 2</title>
+<style>
+*{box-sizing:border-box}
+html{overflow-y:scroll}
+*{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,0.45) rgba(15,23,42,0.55)}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
+*::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(2,6,23,0.8);backdrop-filter:blur(6px);z-index:1000;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.modal.active{display:flex}
+.modal-content{background:#0f172a;color:#e2e8f0;border:1px solid rgba(148,163,184,0.2);border-radius:16px;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,0.5);max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);overflow:auto;margin:0 auto}
+.modal-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding-bottom:12px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,0.2)}
+.modal-header h2{margin:0;font-size:18px;font-weight:700;color:#f8fafc}
+.close-btn{background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);color:#e2e8f0;border-radius:10px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;transition:all 0.2s}
+.close-btn:hover{border-color:#38bdf8;color:#fff}
+.sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
+.sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
+.sidebar-icon svg{width:16px;height:16px;stroke:#7dd3fc;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.sidebar-text{font-size:8px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:#cbd5f5;line-height:1.2}
+.sidebar-link:hover{border-color:rgba(56,189,248,0.55);background:rgba(15,23,42,0.85)}
+.sidebar-link:hover .sidebar-icon{background:rgba(56,189,248,0.18);border-color:rgba(56,189,248,0.55)}
+.sidebar-link:hover .sidebar-text{color:#fff}
+.sidebar-link.logout .sidebar-icon{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.35)}
+.sidebar-link.logout .sidebar-icon svg{stroke:#fca5a5}
+.sidebar-link.logout:hover{border-color:rgba(239,68,68,0.55);background:rgba(15,23,42,0.85);box-shadow:0 10px 22px rgba(239,68,68,0.2)}
+.sidebar-link.logout:hover .sidebar-text{color:#fff}
+.sidebar-link.logout:hover .sidebar-icon{background:rgba(239,68,68,0.18);border-color:rgba(239,68,68,0.55)}
+.sidebar-link.logout:hover .sidebar-icon svg{stroke:#fecaca}
+.sidebar-footer{margin-top:auto}
+.main{flex:1;min-width:0}
+.container{width:100%;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:24px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
+.section{background:rgba(15,23,42,0.7);border:1px solid rgba(148,163,184,0.18);border-radius:16px;padding:14px 16px;box-shadow:0 16px 40px rgba(0,0,0,0.35);margin-bottom:14px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.api-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;background:transparent;color:#e2e8f0;border:1px solid rgba(148,163,184,0.35);border-radius:10px;font-weight:700;font-size:12px;cursor:pointer}
+.api-btn:hover{border-color:#38bdf8}
+.table-wrap{max-height:72vh;overflow:auto;border:1px solid rgba(148,163,184,0.2);border-radius:10px}
+.cash-table{width:100%;border-collapse:collapse}
+.cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:8px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:2}
+.cash-table td{padding:8px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.cash-muted{color:#94a3b8;font-size:12px}
+.check-col{width:40px;text-align:center}
+.shipment-name{font-size:18px;font-weight:700;letter-spacing:0.2px;color:#f8fafc}
+.meta-col{font-size:12px;color:#cbd5f5;white-space:nowrap}
+.actions-cell{width:170px;text-align:right;white-space:nowrap}
+.icon-btn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;margin-left:6px}
+.icon-btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.icon-btn:hover{border-color:#38bdf8;color:#fff}
+.icon-btn.danger{border-color:rgba(239,68,68,0.45);color:#fca5a5}
+.icon-btn.danger:hover{border-color:#ef4444;color:#fecaca}
+.row-check,.head-check{width:15px;height:15px;accent-color:#38bdf8;cursor:pointer}
+@media (max-width: 900px){.layout{flex-direction:column;padding-left:0}.sidebar{width:100%;height:auto;position:relative}.shipment-name{font-size:16px}}
+</style></head><body>
+<div class="layout">
+  ${renderSidebar('/shipments-2')}
+  <main class="main">
+    <div class="container">
+      <div class="section">
+        <div class="toolbar">
+          <h1 style="margin:0;font-size:24px">Отгрузки 2</h1>
+          <button type="button" id="btnRefreshShipments2" class="api-btn">Обновить</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="table-wrap">
+          <table class="cash-table">
+            <thead>
+              <tr>
+                <th class="check-col"><input id="shipments2CheckAll" class="head-check" type="checkbox" /></th>
+                <th>Название поставки</th>
+                <th>Дата поставки</th>
+                <th>Автор</th>
+                <th class="actions-cell"></th>
+              </tr>
+            </thead>
+            <tbody id="shipments2Body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+${renderProfileModal()}
+${renderProfileScript()}
+<script>
+function escapeHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;');}
+function authHeaders(json){
+  var token = localStorage.getItem('authToken');
+  if (!token) {
+    var m = document.cookie.match(/(?:^|;\\s*)authToken=([^;]+)/);
+    if (m && m[1]) {
+      token = decodeURIComponent(m[1]);
+      localStorage.setItem('authToken', token);
+    }
+  }
+  var h = token ? { 'Authorization': 'Bearer ' + token } : {};
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+}
+async function apiRequest(path, options){
+  try {
+    var res = await fetch(path, Object.assign({ credentials: 'same-origin' }, options || {}));
+    var ct = (res.headers.get('content-type') || '').toLowerCase();
+    var payload = ct.indexOf('application/json') !== -1 ? await res.json() : { success:false, error:'HTTP ' + res.status };
+    if (!res.ok) {
+      payload = payload && typeof payload === 'object' ? payload : { success:false };
+      payload.success = false;
+      if (!payload.error) payload.error = 'HTTP ' + res.status;
+    }
+    return payload;
+  } catch (e) {
+    return { success:false, error:(e && e.message) ? e.message : 'Сетевая ошибка' };
+  }
+}
+async function apiGet(path){ return apiRequest(path,{ headers: authHeaders(false) }); }
+async function apiDelete(path){ return apiRequest(path,{ method:'DELETE', headers: authHeaders(false) }); }
+
+function getShipmentDisplayName(item){
+  return item && item.public_id ? item.public_id : ('#' + (item && item.id ? item.id : '')); 
+}
+
+function formatDateOnly(value){
+  if (!value) return '—';
+  var d = new Date(value);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('ru-RU');
+}
+
+function getShipmentAuthor(item){
+  if (!item) return '—';
+  if (item.created_by_user_id) return 'ID ' + item.created_by_user_id;
+  return '—';
+}
+
+function bindCheckAll(){
+  var head = document.getElementById('shipments2CheckAll');
+  if (!head) return;
+  head.addEventListener('change', function(){
+    document.querySelectorAll('.row-check').forEach(function(el){ el.checked = head.checked; });
+  });
+}
+
+async function loadShipments2(){
+  var tbody = document.getElementById('shipments2Body');
+  var head = document.getElementById('shipments2CheckAll');
+  if (head) head.checked = false;
+  var data = await apiGet('/api/fbo/shipments');
+  var items = (data && data.success && Array.isArray(data.items)) ? data.items : [];
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:12px">Поставок нет</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(function(item){
+    var title = escapeHtml(getShipmentDisplayName(item));
+    var date = escapeHtml(formatDateOnly(item.created_at));
+    var author = escapeHtml(getShipmentAuthor(item));
+    return '<tr>'
+      + '<td class="check-col"><input class="row-check" type="checkbox" data-id="' + item.id + '" /></td>'
+      + '<td><span class="shipment-name">' + title + '</span></td>'
+      + '<td class="meta-col">' + date + '</td>'
+      + '<td class="meta-col">' + author + '</td>'
+      + '<td class="actions-cell">'
+      + '<button class="icon-btn" type="button" title="Детали" onclick="openShipment2Details(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /></svg></button>'
+      + '<button class="icon-btn" type="button" title="Редактировать" onclick="editShipment2(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21l3.8-1 11-11-2.8-2.8-11 11L3 21z" /><path d="M14 5l2.8 2.8" /></svg></button>'
+      + '<button class="icon-btn danger" type="button" title="Удалить" onclick="deleteShipment2(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /></svg></button>'
+      + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+async function deleteShipment2(id){
+  if (!confirm('Удалить поставку?')) return;
+  var d = await apiDelete('/api/fbo/shipments/' + id);
+  if (!d || !d.success) return alert((d && d.error) || 'Ошибка удаления');
+  await loadShipments2();
+}
+
+function openShipment2Details(id){
+  window.location.href = '/shipments';
+}
+
+function editShipment2(){
+  alert('Редактирование названия пока не меняет логику именования. Названия отображаются как на текущей странице /shipments.');
+}
+
+window.deleteShipment2 = deleteShipment2;
+window.openShipment2Details = openShipment2Details;
+window.editShipment2 = editShipment2;
+
+document.getElementById('btnRefreshShipments2').addEventListener('click', function(){ loadShipments2(); });
+bindCheckAll();
+loadShipments2();
+</script>
+</body></html>`);
+});
+
 // Главная страница - Финансовый отчет
 app.get('/fin-report', requireAuth, (req, res) => {
   res.send(`<!doctype html>
@@ -5719,11 +7261,21 @@ html{overflow-y:scroll}
 *::-webkit-scrollbar-thumb{background:rgba(56,189,248,0.45);border-radius:10px;border:2px solid rgba(15,23,42,0.55)}
 *::-webkit-scrollbar-thumb:hover{background:rgba(56,189,248,0.7)}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;margin:0;padding:24px 24px 24px 0;color:#e2e8f0;background:#0b1220;background-image:radial-gradient(1200px 600px at 10% -10%,rgba(56,189,248,0.25),rgba(0,0,0,0)),radial-gradient(900px 500px at 90% 0%,rgba(34,197,94,0.15),rgba(0,0,0,0)),linear-gradient(180deg,#0b1220 0%,#0f172a 40%,#0b1220 100%);min-height:100vh}
-.layout{display:flex;gap:18px;min-height:calc(100vh - 48px)}
-.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:sticky;top:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:1;margin-top:-24px}
+.layout{display:flex;gap:18px;min-height:calc(100vh - 48px);padding-left:110px}
+.sidebar{width:92px;flex:0 0 92px;background:rgba(10,16,30,0.92);border:1px solid rgba(148,163,184,0.12);border-radius:0;box-shadow:0 20px 50px rgba(2,6,23,0.45);padding:10px 8px;position:fixed;left:0;top:0;bottom:0;align-self:flex-start;height:100vh;display:flex;flex-direction:column;gap:14px;z-index:30;margin-top:0}
 .sidebar-footer{margin-top:auto}
-.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px}
-.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px}
+.sidebar-top{display:flex;justify-content:center;padding:6px 0 2px;position:relative;z-index:31}
+.sidebar-top-icon{width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,#38bdf8 0%,#22c55e 100%);display:flex;align-items:center;justify-content:center;color:#0b1220;font-weight:800;font-size:12px;letter-spacing:0.3px;border:none;cursor:pointer;transition:transform .2s,box-shadow .2s}
+.sidebar-top-icon:hover{transform:translateY(-1px);box-shadow:0 10px 22px rgba(56,189,248,0.28)}
+.sidebar-top-icon svg{width:18px;height:18px;stroke:#0b1220;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.profile-modal-content{width:min(920px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+.profile-layout{display:grid;grid-template-columns:170px 1fr;gap:22px;align-items:start}
+.profile-avatar{width:150px;height:150px;border-radius:50%;border:6px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.9);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(0,0,0,0.35)}
+.profile-avatar svg{width:72px;height:72px;stroke:#94a3b8;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.profile-form-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 16px}
+.profile-field{display:flex;flex-direction:column;gap:6px}
+.profile-field.full{grid-column:1 / -1}
+.profile-actions{display:flex;justify-content:flex-end;margin-top:14px}
 .main{flex:1;min-width:0;position:relative;z-index:2}
 .sidebar-link{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:66px;padding:8px 4px;border-radius:16px;border:1px solid rgba(148,163,184,0.16);background:rgba(12,18,34,0.7);color:#e2e8f0;text-decoration:none;text-align:center;transition:all 0.2s;box-shadow:0 10px 22px rgba(2,6,23,0.35)}
 .sidebar-icon{width:28px;height:28px;border-radius:10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.35);display:flex;align-items:center;justify-content:center}
@@ -5741,8 +7293,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxyg
 .main{flex:1;min-width:0}
 .container{width:100%;max-width:none;margin:0;background:rgba(15,23,42,0.78);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,0.18);border-radius:20px;padding:26px 26px 30px;box-shadow:0 28px 80px rgba(0,0,0,0.5)}
 @media (max-width: 900px){
-  .layout{flex-direction:column}
-  .sidebar{width:100%;height:auto;position:relative;top:auto}
+  .layout{flex-direction:column;padding-left:0}
+  .sidebar{width:100%;height:auto;position:relative;left:auto;top:auto;bottom:auto;margin-top:0}
 }
 h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-0.3px}
 .header-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
@@ -5834,43 +7386,7 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
 </head>
 <body>
 <div class="layout">
-  <aside class="sidebar">
-    <div class="sidebar-top">
-      <div class="sidebar-top-icon">WB</div>
-    </div>
-    <a class="sidebar-link" href="/">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M9 20v-6h6v6" /></svg>
-      </span>
-      <span class="sidebar-text">Главная</span>
-    </a>
-    <a class="sidebar-link" href="/fin-report">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16" /><path d="M7 16v-6" /><path d="M12 16V8" /><path d="M17 16v-3" /></svg>
-      </span>
-      <span class="sidebar-text">Финансовый отчет</span>
-    </a>
-    <a class="sidebar-link" href="/products">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4-4" /></svg>
-      </span>
-      <span class="sidebar-text">Анализ товаров</span>
-    </a>
-    <a class="sidebar-link" href="/stocks">
-      <span class="sidebar-icon">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7l8-4 8 4-8 4-8-4z" /><path d="M4 7v10l8 4 8-4V7" /><path d="M12 11v10" /></svg>
-      </span>
-      <span class="sidebar-text">Управление остатками</span>
-    </a>
-    <div class="sidebar-footer">
-      <a class="sidebar-link logout" href="/api/logout" onclick="localStorage.removeItem('authToken')">
-        <span class="sidebar-icon">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /><path d="M13 4H5v16h8" /></svg>
-        </span>
-        <span class="sidebar-text">Выход</span>
-      </a>
-    </div>
-  </aside>
+  ${renderSidebar('/fin-report')}
   <main class="main">
     <div class="container">
   <div class="section">
@@ -5970,6 +7486,8 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
     </div>
   </main>
 </div>
+
+${renderProfileModal()}
 
   <!-- Модальное окно: Детали отчёта -->
   <div id="reportInfoModal" class="modal modal-overlay" onclick="closeModalOnOutsideClick(event, 'reportInfoModal')">
@@ -6253,6 +7771,7 @@ h1{margin:0 0 16px;font-size:28px;font-weight:700;color:#f8fafc;letter-spacing:-
   </div>
 </div>
 
+${renderProfileScript()}
 <script>
 // ==================== УПРАВЛЕНИЕ КОМПАНИЯМИ ====================
 let businesses = [];
