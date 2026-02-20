@@ -16,6 +16,8 @@ Scope:
 - **Main page (`/`)**: Cashflow (ДДС) + долги
 - **Secondary page (`/fin-report`)**: Financial Report dashboard with per-company reporting
 - **Third page (`/products`)**: Product analysis MAX UI with detailed product research
+- **Additional page (`/shipments`)**: Пошаговый процесс отгрузок (поставка → склады → короба → сканирование)
+- **Comparison page (`/shipments-2`)**: Альтернативный UI для сравнения UX отгрузок на тех же FBO-сущностях
 - Database-driven authentication with password hashing (Supabase)
 - Multi-company architecture: accounts → businesses hierarchy
 - CASCADE DELETE: removing account deletes all its businesses

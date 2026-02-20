@@ -153,6 +153,40 @@ async function updateAccountPassword(accountId, newPassword) {
   return !error;
 }
 
+/**
+ * Обновление профиля аккаунта (поддерживаемые поля)
+ */
+async function updateAccountProfile(accountId, updates) {
+  const allowedFields = ['username', 'email'];
+  const filteredUpdates = {};
+
+  for (const key of Object.keys(updates || {})) {
+    if (allowedFields.includes(key)) {
+      filteredUpdates[key] = updates[key];
+    }
+  }
+
+  if (Object.keys(filteredUpdates).length === 0) {
+    return false;
+  }
+
+  filteredUpdates.updated_at = new Date().toISOString();
+
+  const { error } = await supabase
+    .from('accounts')
+    .update(filteredUpdates)
+    .eq('id', accountId);
+
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error('Логин или email уже заняты');
+    }
+    throw error;
+  }
+
+  return true;
+}
+
 // ==================== КОМПАНИИ ====================
 
 /**
@@ -1163,6 +1197,7 @@ module.exports = {
   getAccountByUsername,
   deleteAccount,
   updateAccountPassword,
+  updateAccountProfile,
   // Компании
   createBusiness,
   getBusinessesByAccount,
