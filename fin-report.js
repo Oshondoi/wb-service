@@ -8,6 +8,7 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const XLSX = require('xlsx');
 const db = require('./database');
 const supabase = require('./supabase-client');
 const syncService = require('./sync-service');
@@ -268,9 +269,15 @@ document.getElementById('loginForm').onsubmit = function(e) {
 
 document.getElementById('registerForm').onsubmit = function(e) {
   e.preventDefault();
-  var username = document.getElementById('regUsername').value;
-  var email = document.getElementById('regEmail').value;
-  var password = document.getElementById('regPassword').value;
+  var username = (document.getElementById('regUsername').value || '').trim();
+  var email = (document.getElementById('regEmail').value || '').trim();
+  var password = (document.getElementById('regPassword').value || '').trim();
+  if (!username) {
+    var err = document.getElementById('error');
+    err.textContent = 'Логин обязателен';
+    err.style.display = 'block';
+    return;
+  }
   fetch('/api/register', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -456,16 +463,11 @@ app.post('/api/register', async (req, res) => {
   });
 
   app.post('/api/profile', requireAuth, async (req, res) => {
-    const username = String(req.body?.username || '').trim();
     const emailRaw = String(req.body?.email || '').trim();
     const email = emailRaw || null;
 
-    if (!username) {
-      return res.json({ success: false, error: 'Имя обязательно' });
-    }
-
     try {
-      await db.updateAccountProfile(req.account.id, { username, email });
+      await db.updateAccountProfile(req.account.id, { email });
       const account = await db.getAccountById(req.account.id);
       res.json({
         success: true,
@@ -596,12 +598,160 @@ function pickRpcRow(data) {
   return data || null;
 }
 
+async function resolveFboOwnerAccountId(userAccountId) {
+  const { data, error } = await supabase
+    .from('account_members')
+    .select('account_id, role, is_active')
+    .eq('user_account_id', userAccountId)
+    .eq('is_active', true)
+    .order('role', { ascending: true })
+    .limit(1);
+
+  if (error || !Array.isArray(data) || !data.length) return userAccountId;
+  const row = data[0];
+  return row && row.account_id ? row.account_id : userAccountId;
+}
+
+async function getFboScope(req) {
+  const ownerAccountId = await resolveFboOwnerAccountId(req.account.id);
+  return {
+    ownerAccountId,
+    actorUserId: req.account.id
+  };
+}
+
+async function getOwnedBusiness(ownerAccountId, businessId) {
+  const { data, error } = await supabase
+    .from('businesses')
+    .select('id, company_name, account_id, is_active')
+    .eq('id', businessId)
+    .eq('account_id', ownerAccountId)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+app.get('/api/fbo/businesses', requireAuth, async (req, res) => {
+  try {
+    const { ownerAccountId } = await getFboScope(req);
+    const { data, error } = await supabase
+      .from('businesses')
+      .select('id, company_name, is_active')
+      .eq('account_id', ownerAccountId)
+      .eq('is_active', true)
+      .order('company_name', { ascending: true });
+
+    if (error) throw error;
+    res.json({ success: true, items: data || [] });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки магазинов для партий' });
+  }
+});
+
+app.get('/api/fbo/batches', requireAuth, async (req, res) => {
+  try {
+    const { ownerAccountId } = await getFboScope(req);
+    const { data, error } = await supabase
+      .from('fbo_batches')
+      .select('id, name, business_id, seq_no, public_id, is_active, created_at, businesses(company_name)')
+      .eq('account_id', ownerAccountId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const items = (data || []).map(item => ({
+      id: item.id,
+      name: item.name,
+      business_id: item.business_id || null,
+      business_name: item.businesses && item.businesses.company_name ? item.businesses.company_name : null,
+      seq_no: item.seq_no || null,
+      public_id: item.public_id || null,
+      is_active: item.is_active,
+      created_at: item.created_at
+    }));
+
+    res.json({ success: true, items });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка загрузки партий' });
+  }
+});
+
+app.post('/api/fbo/batches', requireAuth, async (req, res) => {
+  const businessId = parseOptionalInt(req.body && req.body.business_id);
+  if (!businessId) {
+    return res.json({ success: false, error: 'business_id обязателен для создания партии' });
+  }
+
+  try {
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
+    const business = await getOwnedBusiness(ownerAccountId, businessId);
+    if (!business) {
+      return res.json({ success: false, error: 'Магазин не найден или недоступен' });
+    }
+
+    const nextSeq = async () => {
+      const { data: last } = await supabase
+        .from('fbo_batches')
+        .select('seq_no')
+        .eq('business_id', business.id)
+        .order('seq_no', { ascending: false })
+        .limit(1);
+      const maxSeq = Array.isArray(last) && last.length && Number.isFinite(Number(last[0].seq_no))
+        ? Number(last[0].seq_no)
+        : 0;
+      return maxSeq + 1;
+    };
+
+    let created = null;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const seqNo = await nextSeq();
+      const businessName = normalizeFboName(business.company_name);
+      const publicId = `${businessName} - ${seqNo}`;
+
+      const { data, error } = await supabase
+        .from('fbo_batches')
+        .insert({
+          account_id: ownerAccountId,
+          business_id: business.id,
+          name: businessName,
+          seq_no: seqNo,
+          public_id: publicId,
+          created_by_user_id: actorUserId
+        })
+        .select('id, name, business_id, seq_no, public_id, is_active, created_at')
+        .single();
+
+      if (!error) {
+        created = data;
+        break;
+      }
+
+      lastError = error;
+      const isDuplicate = error && error.code === '23505';
+      if (!isDuplicate) break;
+    }
+
+    if (!created) {
+      throw lastError || new Error('Ошибка создания партии');
+    }
+
+    res.json({ success: true, item: created });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка создания партии' });
+  }
+});
+
 app.get('/api/fbo/sources', requireAuth, async (req, res) => {
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { data, error } = await supabase
       .from('fbo_sources')
       .select('id, name, is_active, created_at')
-      .eq('account_id', req.account.id)
+      .eq('account_id', ownerAccountId)
       .eq('is_active', true)
       .order('name', { ascending: true });
 
@@ -619,12 +769,13 @@ app.post('/api/fbo/sources', requireAuth, async (req, res) => {
   }
 
   try {
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
     const { data, error } = await supabase
       .from('fbo_sources')
       .insert({
-        account_id: req.account.id,
+        account_id: ownerAccountId,
         name,
-        created_by_user_id: req.account.id
+        created_by_user_id: actorUserId
       })
       .select('id, name, is_active, created_at')
       .single();
@@ -638,10 +789,11 @@ app.post('/api/fbo/sources', requireAuth, async (req, res) => {
 
 app.get('/api/fbo/warehouses', requireAuth, async (req, res) => {
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { data, error } = await supabase
       .from('fbo_warehouses')
       .select('id, name, wb_code, is_active, created_at')
-      .eq('account_id', req.account.id)
+      .eq('account_id', ownerAccountId)
       .eq('is_active', true)
       .order('name', { ascending: true });
 
@@ -662,13 +814,14 @@ app.post('/api/fbo/warehouses', requireAuth, async (req, res) => {
   }
 
   try {
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
     const { data, error } = await supabase
       .from('fbo_warehouses')
       .insert({
-        account_id: req.account.id,
+        account_id: ownerAccountId,
         name,
         wb_code: wbCode,
-        created_by_user_id: req.account.id
+        created_by_user_id: actorUserId
       })
       .select('id, name, wb_code, is_active, created_at')
       .single();
@@ -697,11 +850,12 @@ app.delete('/api/fbo/sources/:id', requireAuth, async (req, res) => {
   if (!sourceId) return res.json({ success: false, error: 'Некорректный source_id' });
 
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { error } = await supabase
       .from('fbo_sources')
       .delete()
       .eq('id', sourceId)
-      .eq('account_id', req.account.id);
+      .eq('account_id', ownerAccountId);
 
     if (error) throw error;
     res.json({ success: true });
@@ -715,11 +869,12 @@ app.delete('/api/fbo/warehouses/:id', requireAuth, async (req, res) => {
   if (!warehouseId) return res.json({ success: false, error: 'Некорректный warehouse_id' });
 
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { error } = await supabase
       .from('fbo_warehouses')
       .delete()
       .eq('id', warehouseId)
-      .eq('account_id', req.account.id);
+      .eq('account_id', ownerAccountId);
 
     if (error) throw error;
     res.json({ success: true });
@@ -730,10 +885,11 @@ app.delete('/api/fbo/warehouses/:id', requireAuth, async (req, res) => {
 
 app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { data, error } = await supabase
       .from('fbo_shipments')
-      .select('id, public_id, status, created_at, source_id, created_by_user_id, fbo_sources(name)')
-      .eq('account_id', req.account.id)
+      .select('id, public_id, status, created_at, source_id, batch_id, created_by_user_id, fbo_sources(name), fbo_batches(name, public_id, seq_no, business_id)')
+      .eq('account_id', ownerAccountId)
       .order('created_at', { ascending: false })
       .limit(200);
 
@@ -741,6 +897,8 @@ app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
 
     const shipmentIds = (data || []).map(item => item.id);
     let whMap = {};
+    let boxMap = {};
+    let itemMap = {};
     if (shipmentIds.length) {
       const { data: links } = await supabase
         .from('fbo_shipment_warehouses')
@@ -748,6 +906,55 @@ app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
         .in('shipment_id', shipmentIds);
       (links || []).forEach(link => {
         whMap[link.shipment_id] = (whMap[link.shipment_id] || 0) + 1;
+      });
+
+      const shipmentWarehouseIds = (links || []).map(link => link.id);
+      if (shipmentWarehouseIds.length) {
+        const linkToShipmentMap = {};
+        (links || []).forEach(link => {
+          linkToShipmentMap[link.id] = link.shipment_id;
+        });
+
+        const { data: boxes } = await supabase
+          .from('fbo_boxes')
+          .select('id, shipment_warehouse_id')
+          .in('shipment_warehouse_id', shipmentWarehouseIds);
+
+        const boxToShipmentMap = {};
+        (boxes || []).forEach(box => {
+          const shipmentId = linkToShipmentMap[box.shipment_warehouse_id];
+          if (!shipmentId) return;
+          boxMap[shipmentId] = (boxMap[shipmentId] || 0) + 1;
+          boxToShipmentMap[box.id] = shipmentId;
+        });
+
+        const boxIds = (boxes || []).map(box => box.id);
+        if (boxIds.length) {
+          const { data: scans } = await supabase
+            .from('fbo_scan_events')
+            .select('box_id')
+            .in('box_id', boxIds);
+
+          (scans || []).forEach(scan => {
+            const shipmentId = boxToShipmentMap[scan.box_id];
+            if (!shipmentId) return;
+            itemMap[shipmentId] = (itemMap[shipmentId] || 0) + 1;
+          });
+        }
+      }
+    }
+
+    const authorIds = Array.from(new Set((data || [])
+      .map(item => parseOptionalInt(item.created_by_user_id))
+      .filter(id => Number.isFinite(id))));
+    let authorMap = {};
+    if (authorIds.length) {
+      const { data: authors } = await supabase
+        .from('accounts')
+        .select('id, username')
+        .in('id', authorIds);
+      (authors || []).forEach(author => {
+        authorMap[author.id] = author && author.username ? author.username : null;
       });
     }
 
@@ -757,9 +964,17 @@ app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
       status: item.status,
       created_at: item.created_at,
       source_id: item.source_id,
+      batch_id: item.batch_id || null,
       created_by_user_id: item.created_by_user_id,
+      created_by_user_login: authorMap[item.created_by_user_id] || null,
+      batch_name: item.fbo_batches && item.fbo_batches.name ? item.fbo_batches.name : null,
+      batch_public_id: item.fbo_batches && item.fbo_batches.public_id ? item.fbo_batches.public_id : null,
+      batch_seq_no: item.fbo_batches && item.fbo_batches.seq_no ? item.fbo_batches.seq_no : null,
+      batch_business_id: item.fbo_batches && item.fbo_batches.business_id ? item.fbo_batches.business_id : null,
       source_name: item.fbo_sources && item.fbo_sources.name ? item.fbo_sources.name : null,
-      warehouses_count: whMap[item.id] || 0
+      warehouses_count: whMap[item.id] || 0,
+      boxes_count: boxMap[item.id] || 0,
+      items_count: itemMap[item.id] || 0
     }));
 
     res.json({ success: true, items });
@@ -770,19 +985,35 @@ app.get('/api/fbo/shipments', requireAuth, async (req, res) => {
 
 app.post('/api/fbo/shipments', requireAuth, async (req, res) => {
   const sourceId = parseOptionalInt(req.body && req.body.source_id);
+  const batchId = parseOptionalInt(req.body && req.body.batch_id);
   if (!sourceId) {
     return res.json({ success: false, error: 'source_id обязателен' });
   }
+  if (!batchId) {
+    return res.json({ success: false, error: 'batch_id обязателен' });
+  }
 
   try {
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
+    const { data: batch, error: batchError } = await supabase
+      .from('fbo_batches')
+      .select('id')
+      .eq('id', batchId)
+      .eq('account_id', ownerAccountId)
+      .single();
+    if (batchError || !batch) {
+      return res.json({ success: false, error: 'Партия не найдена' });
+    }
+
     const { data, error } = await supabase
       .from('fbo_shipments')
       .insert({
-        account_id: req.account.id,
+        account_id: ownerAccountId,
         source_id: sourceId,
-        created_by_user_id: req.account.id
+        batch_id: batchId,
+        created_by_user_id: actorUserId
       })
-      .select('id, public_id, status, created_at, source_id')
+      .select('id, public_id, status, created_at, source_id, batch_id')
       .single();
 
     if (error) throw error;
@@ -792,16 +1023,75 @@ app.post('/api/fbo/shipments', requireAuth, async (req, res) => {
   }
 });
 
+app.put('/api/fbo/shipments/:id', requireAuth, async (req, res) => {
+  const shipmentId = parseOptionalInt(req.params.id);
+  const sourceId = parseOptionalInt(req.body && req.body.source_id);
+  const batchId = parseOptionalInt(req.body && req.body.batch_id);
+
+  if (!shipmentId) {
+    return res.json({ success: false, error: 'Некорректный shipment_id' });
+  }
+  if (!sourceId || !batchId) {
+    return res.json({ success: false, error: 'source_id и batch_id обязательны' });
+  }
+
+  try {
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
+    if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
+    if (shipment.status !== 'draft') {
+      return res.json({ success: false, error: 'Редактирование доступно только для draft поставки' });
+    }
+
+    const { data: source, error: sourceError } = await supabase
+      .from('fbo_sources')
+      .select('id')
+      .eq('id', sourceId)
+      .eq('account_id', ownerAccountId)
+      .single();
+    if (sourceError || !source) {
+      return res.json({ success: false, error: 'Источник не найден' });
+    }
+
+    const { data: batch, error: batchError } = await supabase
+      .from('fbo_batches')
+      .select('id')
+      .eq('id', batchId)
+      .eq('account_id', ownerAccountId)
+      .single();
+    if (batchError || !batch) {
+      return res.json({ success: false, error: 'Партия не найдена' });
+    }
+
+    const { data, error } = await supabase
+      .from('fbo_shipments')
+      .update({
+        source_id: sourceId,
+        batch_id: batchId
+      })
+      .eq('id', shipmentId)
+      .eq('account_id', ownerAccountId)
+      .select('id, public_id, status, created_at, source_id, batch_id')
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, item: data });
+  } catch (error) {
+    res.json({ success: false, error: error.message || 'Ошибка обновления поставки' });
+  }
+});
+
 app.delete('/api/fbo/shipments/:id', requireAuth, async (req, res) => {
   const shipmentId = parseOptionalInt(req.params.id);
   if (!shipmentId) return res.json({ success: false, error: 'Некорректный shipment_id' });
 
   try {
+    const { ownerAccountId } = await getFboScope(req);
     const { error } = await supabase
       .from('fbo_shipments')
       .delete()
       .eq('id', shipmentId)
-      .eq('account_id', req.account.id);
+      .eq('account_id', ownerAccountId);
 
     if (error) throw error;
     res.json({ success: true });
@@ -815,7 +1105,8 @@ app.get('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, re
   if (!shipmentId) return res.json({ success: false, error: 'Некорректный shipment_id' });
 
   try {
-    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
 
     const { data, error } = await supabase
@@ -849,7 +1140,8 @@ app.post('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, r
   }
 
   try {
-    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Изменения доступны только для draft поставки' });
 
@@ -857,7 +1149,7 @@ app.post('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, r
       .from('fbo_warehouses')
       .select('id')
       .eq('id', warehouseId)
-      .eq('account_id', req.account.id)
+      .eq('account_id', ownerAccountId)
       .single();
     if (whError || !wh) {
       return res.json({ success: false, error: 'Склад не найден' });
@@ -868,7 +1160,7 @@ app.post('/api/fbo/shipments/:shipmentId/warehouses', requireAuth, async (req, r
       .upsert({
         shipment_id: shipmentId,
         warehouse_id: warehouseId,
-        created_by_user_id: req.account.id
+        created_by_user_id: actorUserId
       }, {
         onConflict: 'shipment_id,warehouse_id'
       })
@@ -895,7 +1187,8 @@ app.delete('/api/fbo/shipment-warehouses/:id', requireAuth, async (req, res) => 
 
     if (linkError || !link) return res.json({ success: false, error: 'Связка не найдена' });
 
-    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, link.shipment_id);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Изменения доступны только для draft поставки' });
 
@@ -926,7 +1219,8 @@ app.get('/api/fbo/boxes', requireAuth, async (req, res) => {
 
     if (linkError || !link) return res.json({ success: false, error: 'Связка склад-поставка не найдена' });
 
-    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, link.shipment_id);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
 
     const { data, error } = await supabase
@@ -957,13 +1251,14 @@ app.post('/api/fbo/boxes', requireAuth, async (req, res) => {
 
     if (linkError || !link) return res.json({ success: false, error: 'Связка склад-поставка не найдена' });
 
-    const shipment = await getOwnedFboShipment(req.account.id, link.shipment_id);
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, link.shipment_id);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Добавлять короба можно только в draft поставку' });
 
     const { data, error } = await supabase.rpc('fbo_create_box_v2', {
       p_shipment_warehouse_id: shipmentWarehouseId,
-      p_created_by_user_id: req.account.id
+      p_created_by_user_id: actorUserId
     });
 
     if (error) throw error;
@@ -992,7 +1287,8 @@ app.delete('/api/fbo/boxes/:id', requireAuth, async (req, res) => {
 
     if (boxError || !box) return res.json({ success: false, error: 'Короб не найден' });
 
-    const shipment = await getOwnedFboShipment(req.account.id, box.shipment_id);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, box.shipment_id);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Удаление доступно только в draft поставке' });
 
@@ -1018,7 +1314,8 @@ app.post('/api/fbo/scans', requireAuth, async (req, res) => {
   }
 
   try {
-    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Сканирование доступно только для draft поставки' });
 
@@ -1037,7 +1334,7 @@ app.post('/api/fbo/scans', requireAuth, async (req, res) => {
         shipment_id: shipmentId,
         box_id: boxId,
         barcode,
-        created_by_user_id: req.account.id
+        created_by_user_id: actorUserId
       })
       .select('*')
       .single();
@@ -1062,7 +1359,8 @@ app.delete('/api/fbo/scans/:id', requireAuth, async (req, res) => {
 
     if (scanError || !scan) return res.json({ success: false, error: 'Скан не найден' });
 
-    const shipment = await getOwnedFboShipment(req.account.id, scan.shipment_id);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, scan.shipment_id);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Удаление доступно только в draft поставке' });
 
@@ -1085,7 +1383,8 @@ app.post('/api/fbo/scans/undo-last', requireAuth, async (req, res) => {
   }
 
   try {
-    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
     if (shipment.status !== 'draft') return res.json({ success: false, error: 'Отмена доступна только в draft поставке' });
 
@@ -1114,7 +1413,8 @@ app.get('/api/fbo/scans/recent', requireAuth, async (req, res) => {
   }
 
   try {
-    const shipment = await getOwnedFboShipment(req.account.id, shipmentId);
+    const { ownerAccountId } = await getFboScope(req);
+    const shipment = await getOwnedFboShipment(ownerAccountId, shipmentId);
     if (!shipment) return res.json({ success: false, error: 'Поставка не найдена' });
 
     const { data, error } = await supabase
@@ -1609,6 +1909,68 @@ app.delete('/api/cash/debts/:id', requireAuth, async (req, res) => {
     res.json({ success });
   } catch (error) {
     res.json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/cash/debts/export-xlsx', requireAuth, async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) {
+      return res.status(400).json({ success: false, error: 'Нет данных для экспорта' });
+    }
+
+    const headers = ['Дата операции', 'Тип', 'Операция', 'Сумма', 'Контрагент', 'Срок', 'Магазин', 'Комментарий'];
+
+    const normalizedRows = rows.map((row) => ({
+      'Дата операции': row && row['Дата операции'] != null ? String(row['Дата операции']) : '—',
+      'Тип': row && row['Тип'] != null ? String(row['Тип']) : '—',
+      'Операция': row && row['Операция'] != null ? String(row['Операция']) : '—',
+      'Сумма': row && row['Сумма'] != null ? String(row['Сумма']) : '—',
+      'Контрагент': row && row['Контрагент'] != null ? String(row['Контрагент']) : '—',
+      'Срок': row && row['Срок'] != null ? String(row['Срок']) : '—',
+      'Магазин': row && row['Магазин'] != null ? String(row['Магазин']) : '—',
+      'Комментарий': row && row['Комментарий'] != null ? String(row['Комментарий']) : '—'
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(normalizedRows, { header: headers });
+
+    const widthMatrix = [headers].concat(
+      normalizedRows.map((row) => headers.map((header) => {
+        const value = row[header] == null ? '' : String(row[header]);
+        return value;
+      }))
+    );
+
+    const minWidths = {
+      'Дата операции': 14,
+      'Тип': 14,
+      'Операция': 14,
+      'Сумма': 14,
+      'Контрагент': 18,
+      'Срок': 10,
+      'Магазин': 12,
+      'Комментарий': 24
+    };
+
+    worksheet['!cols'] = headers.map((header, colIdx) => {
+      const maxLen = widthMatrix.reduce((max, row) => {
+        const len = (row[colIdx] || '').length;
+        return len > max ? len : max;
+      }, 0);
+      const bounded = Math.max(minWidths[header] || 10, Math.min(maxLen + 2, 60));
+      return { wch: bounded };
+    });
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Долги');
+    const fileBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const date = new Date().toISOString().slice(0, 10);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="debt-operations-${date}.xlsx"`);
+    return res.send(fileBuffer);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || 'Ошибка экспорта XLSX' });
   }
 });
 
@@ -2161,7 +2523,7 @@ function renderProfileModal() {
           </div>
           <div class="profile-field">
             <label class="profile-label" for="profileLogin">Логин</label>
-            <input id="profileLogin" class="profile-input" type="text" placeholder="Введите логин" />
+            <input id="profileLogin" class="profile-input" type="text" placeholder="Логин нельзя изменить" readonly />
           </div>
           <div class="profile-field">
             <label class="profile-label" for="profileName">Имя</label>
@@ -2278,18 +2640,13 @@ async function saveProfile() {
   var email = ((document.getElementById('profileEmail') || {}).value || '').trim();
   var phone = ((document.getElementById('profilePhone') || {}).value || '').trim();
 
-  if (!login) {
-    alert('❌ Укажите логин');
-    return;
-  }
-
   var res = await fetch('/api/profile', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ' + token
     },
-    body: JSON.stringify({ username: login, email: email })
+    body: JSON.stringify({ email: email })
   });
 
   var data = await res.json();
@@ -3122,6 +3479,9 @@ input[type=number]{-moz-appearance:textfield}
 .cash-table{width:100%;border-collapse:collapse}
 .cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:10px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:10}
 .cash-table td{padding:10px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.debt-summary-table{table-layout:fixed}
+.debt-summary-table th:nth-child(2),.debt-summary-table td:nth-child(2){width:260px;min-width:260px;max-width:260px}
+.debt-summary-counterparty{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cash-pill{padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
 .cash-pill.income{background:rgba(34,197,94,0.2);color:#86efac;border:1px solid rgba(34,197,94,0.35)}
 .cash-pill.expense{background:rgba(239,68,68,0.2);color:#fca5a5;border:1px solid rgba(239,68,68,0.35)}
@@ -3246,11 +3606,25 @@ input[type=number]{-moz-appearance:textfield}
         <div style="display:flex;align-items:center;gap:10px">
           <div class="cash-muted selected-count" style="font-size:12px">Выбрано: <span id="debtSummarySelectedCount">0</span></div>
           <button class="api-btn primary create-op" style="padding:6px 10px" onclick="openCashDebtModal()">Создать операцию</button>
+          <div class="filter-menu">
+            <button id="debtSummaryTypeFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtSummaryTypeMenu(event)">Все типы</button>
+            <div id="debtSummaryTypeMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all" onclick="setDebtSummaryTypeFilter('all')">Все типы</div>
+              <div class="filter-item" data-value="receivable" onclick="setDebtSummaryTypeFilter('receivable')">Нам должны</div>
+              <div class="filter-item" data-value="payable" onclick="setDebtSummaryTypeFilter('payable')">Мы должны</div>
+            </div>
+          </div>
+          <div class="filter-menu">
+            <button id="debtSummaryCounterpartyFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtSummaryCounterpartyMenu(event)">Все контрагенты</button>
+            <div id="debtSummaryCounterpartyMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all">Все контрагенты</div>
+            </div>
+          </div>
         </div>
         <button id="debtSummaryBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedDebtSummaries()" disabled>Удалить выбранные</button>
       </div>
       <div style="max-height:60vh;overflow:auto">
-        <table class="cash-table">
+        <table class="cash-table debt-summary-table">
           <thead>
             <tr>
               <th style="width:32px;text-align:center"><input type="checkbox" id="debtSummarySelectAll" onclick="toggleAllDebtSummaryCheckboxes(this)" /></th>
@@ -3937,6 +4311,7 @@ function applyCashRange() {
   localStorage.setItem('cashDateTo', dateTo);
   updateCashRangeDisplay();
   loadCashflowData();
+  renderCashDebts();
 }
 
 function updateCashRangeDisplay() {
@@ -5189,6 +5564,7 @@ function loadCashDebts() {
     cashDebts = data.items || [];
     console.log('cashDebts массив:', cashDebts.length, 'записей');
     restoreDebtOperationsFilters();
+    restoreDebtSummaryFilters();
     renderCashDebts();
     renderDebtSummary();
     updateCashSummary();
@@ -5255,8 +5631,10 @@ function renderDebtSummary() {
     };
   });
 
+  const filteredSummaries = applyDebtSummaryFilters(summaries);
+
   const nextSummaryIndex = {};
-  summaries.forEach(item => {
+  filteredSummaries.forEach(item => {
     const key = getDebtSummaryKey(item.counterparty, item.business_id);
     if (!nextSummaryIndex[key]) nextSummaryIndex[key] = {};
     if (item.remainder <= 0.01) return;
@@ -5268,7 +5646,7 @@ function renderDebtSummary() {
   debtSummaryIndex = nextSummaryIndex;
   
   // Сортировка: 1) открытые выше, 2) по проценту выполнения (больше = выше)
-  summaries.sort((a, b) => {
+  filteredSummaries.sort((a, b) => {
     // Сначала по статусу (открытые выше)
     if (!a.isClosed && b.isClosed) return -1;
     if (a.isClosed && !b.isClosed) return 1;
@@ -5277,15 +5655,21 @@ function renderDebtSummary() {
     return b.percent - a.percent;
   });
   
-  if (!summaries.length) {
-    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет долгов</td></tr>';
+  if (!filteredSummaries.length) {
+    body.innerHTML = '<tr><td colspan="9" class="cash-muted" style="text-align:center;padding:16px">Нет долгов по выбранным фильтрам</td></tr>';
     updateDebtSummarySelectAllState();
     return;
   }
   
-  const rows = summaries.map(item => {
+  const rows = filteredSummaries.map(item => {
     const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
     const typeClass = item.debt_type === 'receivable' ? 'receivable' : 'payable';
+    const counterpartyText = item.counterparty || '—';
+    const counterpartyTitle = String(counterpartyText)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
     const counterpartyEncoded = encodeURIComponent(item.counterparty || '—');
     const businessName = getBusinessNameById(item.business_id);
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
@@ -5312,7 +5696,7 @@ function renderDebtSummary() {
     
     return '<tr style="' + rowStyle + '">' +
       '<td style="text-align:center"><input type="checkbox" class="debt-summary-checkbox" data-group-id="' + item.group_id + '" onchange="updateDebtSummarySelectAllState()" /></td>' +
-      '<td>' + (item.counterparty || '—') + '</td>' +
+      '<td><span class="debt-summary-counterparty" title="' + counterpartyTitle + '">' + counterpartyText + '</span></td>' +
       '<td><span class="cash-pill ' + typeClass + '">' + typeLabel + '</span></td>' +
       '<td style="text-align:center;vertical-align:middle">' + progressBar + '</td>' +
       '<td>' + formatMoney(item.total_amount) + '</td>' +
@@ -5664,6 +6048,75 @@ function restoreDebtOperationsFilters() {
   updateDebtFilterButtons();
 }
 
+function getDebtSummaryFilterValues() {
+  const typeValue = localStorage.getItem('debtSummaryTypeFilter') || 'all';
+  const counterpartyValue = localStorage.getItem('debtSummaryCounterpartyFilter') || 'all';
+  return { typeValue, counterpartyValue };
+}
+
+function applyDebtSummaryFilters(items) {
+  const { typeValue, counterpartyValue } = getDebtSummaryFilterValues();
+  return (items || []).filter(item => {
+    if (typeValue !== 'all' && item.debt_type !== typeValue) return false;
+    if (counterpartyValue !== 'all' && String(item.counterparty || '') !== counterpartyValue) return false;
+    return true;
+  });
+}
+
+function restoreDebtSummaryFilters() {
+  localStorage.setItem('debtSummaryTypeFilter', 'all');
+  localStorage.setItem('debtSummaryCounterpartyFilter', 'all');
+  rebuildDebtSummaryCounterpartyMenu();
+  updateDebtSummaryFilterButtons();
+}
+
+function rebuildDebtSummaryCounterpartyMenu() {
+  const menu = document.getElementById('debtSummaryCounterpartyMenu');
+  if (!menu) return;
+
+  const uniqueCounterparties = Array.from(new Set(
+    (cashDebts || []).map(item => String(item && item.counterparty ? item.counterparty : '').trim()).filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const html = ['<div class="filter-item" data-value="all">Все контрагенты</div>'];
+  uniqueCounterparties.forEach(name => {
+    const safeName = name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');
+    html.push('<div class="filter-item" data-value="' + safeName + '">' + safeName + '</div>');
+  });
+
+  menu.innerHTML = html.join('');
+  menu.querySelectorAll('.filter-item').forEach(item => {
+    item.addEventListener('click', () => {
+      setDebtSummaryCounterpartyFilter(item.dataset.value || 'all');
+    });
+  });
+}
+
+function updateDebtSummaryFilterButtons() {
+  const typeBtn = document.getElementById('debtSummaryTypeFilterBtn');
+  const counterpartyBtn = document.getElementById('debtSummaryCounterpartyFilterBtn');
+  const typeMenu = document.getElementById('debtSummaryTypeMenu');
+  const counterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
+  const { typeValue, counterpartyValue } = getDebtSummaryFilterValues();
+
+  if (typeBtn) {
+    typeBtn.textContent = typeValue === 'receivable' ? 'Нам должны' : typeValue === 'payable' ? 'Мы должны' : 'Все типы';
+  }
+  if (counterpartyBtn) {
+    counterpartyBtn.textContent = counterpartyValue === 'all' ? 'Все контрагенты' : counterpartyValue;
+  }
+  if (typeMenu) {
+    typeMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === typeValue);
+    });
+  }
+  if (counterpartyMenu) {
+    counterpartyMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === counterpartyValue);
+    });
+  }
+}
+
 function rebuildDebtCounterpartyMenu() {
   const menu = document.getElementById('cashDebtCounterpartyMenu');
   if (!menu) return;
@@ -5815,6 +6268,38 @@ function toggleDebtBusinessMenu(event) {
   if (menu) menu.classList.toggle('open');
 }
 
+function toggleDebtSummaryTypeMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('debtSummaryTypeMenu');
+  const counterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const typeMenu = document.getElementById('cashDebtTypeMenu');
+  const debtCounterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  if (counterpartyMenu) counterpartyMenu.classList.remove('open');
+  if (opMenu) opMenu.classList.remove('open');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (debtCounterpartyMenu) debtCounterpartyMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleDebtSummaryCounterpartyMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('debtSummaryCounterpartyMenu');
+  const typeMenu = document.getElementById('debtSummaryTypeMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const debtTypeMenu = document.getElementById('cashDebtTypeMenu');
+  const debtCounterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (opMenu) opMenu.classList.remove('open');
+  if (debtTypeMenu) debtTypeMenu.classList.remove('open');
+  if (debtCounterpartyMenu) debtCounterpartyMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
 function setDebtOperationFilter(value) {
   localStorage.setItem('cashDebtOperationFilter', value);
   const menu = document.getElementById('cashDebtOperationMenu');
@@ -5847,11 +6332,29 @@ function setDebtBusinessFilter(value) {
   renderCashDebts();
 }
 
+function setDebtSummaryTypeFilter(value) {
+  localStorage.setItem('debtSummaryTypeFilter', value || 'all');
+  const menu = document.getElementById('debtSummaryTypeMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtSummaryFilterButtons();
+  renderDebtSummary();
+}
+
+function setDebtSummaryCounterpartyFilter(value) {
+  localStorage.setItem('debtSummaryCounterpartyFilter', value || 'all');
+  const menu = document.getElementById('debtSummaryCounterpartyMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtSummaryFilterButtons();
+  renderDebtSummary();
+}
+
 document.addEventListener('click', (event) => {
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
   const counterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
   const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  const summaryTypeMenu = document.getElementById('debtSummaryTypeMenu');
+  const summaryCounterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
   const stocksMenu = document.getElementById('cashStocksBusinessMenu');
   const stocksBtn = document.getElementById('cashStocksBusinessBtn');
   if (stocksMenu && (stocksMenu.contains(event.target) || (stocksBtn && stocksBtn.contains(event.target)))) {
@@ -5861,12 +6364,20 @@ document.addEventListener('click', (event) => {
   if (typeMenu) typeMenu.classList.remove('open');
   if (counterpartyMenu) counterpartyMenu.classList.remove('open');
   if (businessMenu) businessMenu.classList.remove('open');
+  if (summaryTypeMenu) summaryTypeMenu.classList.remove('open');
+  if (summaryCounterpartyMenu) summaryCounterpartyMenu.classList.remove('open');
   if (stocksMenu) stocksMenu.classList.remove('open');
 });
 
 function applyDebtOperationsFilters(items) {
   const { operationValue, typeValue, counterpartyValue, businessValue } = getDebtOperationsFilterValues();
   return items.filter(item => {
+    const rangeFrom = document.getElementById('cashDateFrom')?.value;
+    const rangeTo = document.getElementById('cashDateTo')?.value;
+    if (rangeFrom && rangeTo) {
+      const debtDate = String(item?.debt_date || '').slice(0, 10);
+      if (debtDate && (debtDate < rangeFrom || debtDate > rangeTo)) return false;
+    }
     if (operationValue !== 'all' && getDebtOperationKey(item) !== operationValue) return false;
     if (typeValue !== 'all' && item.debt_type !== typeValue) return false;
     if (counterpartyValue !== 'all' && String(item.counterparty || '') !== counterpartyValue) return false;
@@ -5994,7 +6505,7 @@ async function deleteSelectedCashDebts() {
   }
 }
 
-function exportCashDebtOperationsToExcel() {
+async function exportCashDebtOperationsToExcel() {
   if (!Array.isArray(cashDebts) || !cashDebts.length) {
     alert('❌ Нет данных для экспорта');
     return;
@@ -6021,15 +6532,7 @@ function exportCashDebtOperationsToExcel() {
     return;
   }
 
-  function escapeExcelHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\"/g, '&quot;');
-  }
-
-  const tableRows = rowsToExport.map(item => {
+  const exportRows = rowsToExport.map(item => {
     const debtDate = item.debt_date ? new Date(item.debt_date).toLocaleDateString('ru-RU') : '—';
     const dueDate = item.due_date ? new Date(item.due_date).toLocaleDateString('ru-RU') : '—';
     const amount = Number(item.amount || 0);
@@ -6039,44 +6542,45 @@ function exportCashDebtOperationsToExcel() {
     const operationTypeLabel = getDebtOperationLabel(item);
     const businessName = getBusinessNameById(item.business_id);
 
-    return '<tr>'
-      + '<td>' + escapeExcelHtml(debtDate) + '</td>'
-      + '<td>' + escapeExcelHtml(typeLabel) + '</td>'
-      + '<td>' + escapeExcelHtml(operationTypeLabel) + '</td>'
-      + '<td>' + escapeExcelHtml(displayAmount) + '</td>'
-      + '<td>' + escapeExcelHtml(item.counterparty || '—') + '</td>'
-      + '<td>' + escapeExcelHtml(dueDate) + '</td>'
-      + '<td>' + escapeExcelHtml(businessName || '—') + '</td>'
-      + '<td>' + escapeExcelHtml(item.note || '—') + '</td>'
-      + '</tr>';
-  }).join('');
+    return {
+      'Дата операции': debtDate,
+      'Тип': typeLabel,
+      'Операция': operationTypeLabel,
+      'Сумма': displayAmount,
+      'Контрагент': item.counterparty || '—',
+      'Срок': dueDate,
+      'Магазин': businessName || '—',
+      'Комментарий': item.note || '—'
+    };
+  });
 
-  const workbookHtml = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">'
-    + '<head><meta charset="utf-8"></head><body>'
-    + '<table border="1">'
-    + '<tr>'
-    + '<th>Дата операции</th>'
-    + '<th>Тип</th>'
-    + '<th>Операция</th>'
-    + '<th>Сумма</th>'
-    + '<th>Контрагент</th>'
-    + '<th>Срок</th>'
-    + '<th>Магазин</th>'
-    + '<th>Комментарий</th>'
-    + '</tr>'
-    + tableRows
-    + '</table>'
-    + '</body></html>';
+  try {
+    const response = await fetch('/api/cash/debts/export-xlsx', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({ rows: exportRows })
+    });
 
-  const blob = new Blob(['\uFEFF' + workbookHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  const date = new Date().toISOString().slice(0, 10);
-  link.download = 'debt-operations-' + date + '.xls';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(link.href);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || ('HTTP ' + response.status));
+    }
+
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    const date = new Date().toISOString().slice(0, 10);
+    link.download = 'debt-operations-' + date + '.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  } catch (err) {
+    alert('❌ ' + (err && err.message ? err.message : 'Ошибка экспорта XLSX'));
+  }
 }
 
 function addCashDebt() {
@@ -6819,12 +7323,13 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 
       <div class="section">
         <div class="step"><span class="step-index">1</span><h2>Создать / выбрать поставку</h2></div>
-        <div class="grid">
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr auto;">
           <div><div class="cash-label">Источник</div><select id="sourceSelect" class="cash-input"></select></div>
-          <div class="toolbar"><button id="btnCreateSource" type="button" class="api-btn" onclick="createSource()">+ Источник</button><button id="btnDeleteSource" type="button" class="api-btn danger" onclick="deleteSource()">Удалить источник</button></div>
-          <button id="btnCreateShipment" type="button" class="api-btn primary" onclick="createShipment()">Создать поставку</button>
+          <div><div class="cash-label">Магазин для партии</div><select id="batchBusinessSelect" class="cash-input"></select></div>
+          <div><div class="cash-label">Партия</div><select id="batchSelect" class="cash-input"></select></div>
+          <div class="toolbar"><button id="btnCreateSource" type="button" class="api-btn" onclick="createSource()">+ Источник</button><button id="btnDeleteSource" type="button" class="api-btn danger" onclick="deleteSource()">Удалить источник</button><button id="btnCreateBatch" type="button" class="api-btn" onclick="createBatch()">+ Партия (из магазина)</button><button id="btnCreateShipment" type="button" class="api-btn primary" onclick="createShipment()">Создать поставку</button></div>
         </div>
-        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>Поставка</th><th>Источник</th><th>Статус</th><th>Складов</th><th></th></tr></thead><tbody id="shipmentsBody"></tbody></table></div>
+        <div class="table-wrap" style="margin-top:10px"><table class="cash-table"><thead><tr><th>Поставка</th><th>Партия</th><th>Источник</th><th>Статус</th><th>Складов</th><th></th></tr></thead><tbody id="shipmentsBody"></tbody></table></div>
         <div class="cash-muted" style="margin-top:8px">Активная поставка: <span id="activeShipmentLabel">—</span></div>
       </div>
 
@@ -6858,7 +7363,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 ${renderProfileModal()}
 ${renderProfileScript()}
 <script>
-var fboSources=[], fboWarehouses=[], fboShipments=[], fboShipmentWarehouses=[], fboBoxes=[], fboRecentScans=[];
+var fboSources=[], fboWarehouses=[], fboShipments=[], fboShipmentWarehouses=[], fboBoxes=[], fboRecentScans=[], fboBatches=[], fboBatchBusinesses=[];
 var activeShipmentId=null, activeShipmentWarehouseId=null, activeBoxId=null;
 
 function escapeHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
@@ -6908,7 +7413,9 @@ function setActiveBox(id,label){activeBoxId=id||null;document.getElementById('ac
 
 async function loadSources(){const d=await apiGet('/api/fbo/sources');fboSources=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('sourceSelect');s.innerHTML=fboSources.length?fboSources.map(i=>'<option value="'+i.id+'">'+escapeHtml(i.name)+'</option>').join(''):'<option value="">Нет источников</option>';}
 async function loadWarehouses(){const d=await apiGet('/api/fbo/warehouses');fboWarehouses=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('warehouseSelect');s.innerHTML=fboWarehouses.length?fboWarehouses.map(i=>'<option value="'+i.id+'">'+escapeHtml(i.name)+'</option>').join(''):'<option value="">Нет складов</option>';}
-async function loadShipments(){const d=await apiGet('/api/fbo/shipments');fboShipments=(d&&d.success&&Array.isArray(d.items))?d.items:[];var b=document.getElementById('shipmentsBody');if(!fboShipments.length){b.innerHTML='<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:10px">Поставок нет</td></tr>';return;}b.innerHTML=fboShipments.map(i=>'<tr><td>'+escapeHtml(i.public_id||('#'+i.id))+'</td><td>'+escapeHtml(i.source_name||'—')+'</td><td><span class="chip">'+escapeHtml(i.status||'draft')+'</span></td><td>'+escapeHtml(i.warehouses_count||0)+'</td><td class="toolbar"><button class="api-btn" onclick="setActiveShipment('+i.id+')">Выбрать</button><button class="api-btn danger" onclick="deleteShipment('+i.id+')">Удалить</button></td></tr>').join('');if(!activeShipmentId&&fboShipments.length)setActiveShipment(fboShipments[0].id);}
+async function loadBatchBusinesses(){const d=await apiGet('/api/fbo/businesses');fboBatchBusinesses=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('batchBusinessSelect');if(!s)return;if(!fboBatchBusinesses.length){s.innerHTML='<option value="">Нет активных магазинов</option>';return;}s.innerHTML=fboBatchBusinesses.map(i=>'<option value="'+i.id+'">'+escapeHtml(i.company_name||('ID '+i.id))+'</option>').join('');}
+async function loadBatches(){const d=await apiGet('/api/fbo/batches');fboBatches=(d&&d.success&&Array.isArray(d.items))?d.items:[];var s=document.getElementById('batchSelect');if(!s)return;if(!fboBatches.length){s.innerHTML='<option value="">Нет партий</option>';return;}s.innerHTML=fboBatches.map(i=>{var batchIdLabel=i.public_id?String(i.public_id):((i.name?String(i.name):'Партия')+' - '+(i.seq_no||i.id));return '<option value="'+i.id+'">'+escapeHtml(batchIdLabel)+'</option>';}).join('');}
+async function loadShipments(){const d=await apiGet('/api/fbo/shipments');fboShipments=(d&&d.success&&Array.isArray(d.items))?d.items:[];var b=document.getElementById('shipmentsBody');if(!fboShipments.length){b.innerHTML='<tr><td colspan="6" class="cash-muted" style="text-align:center;padding:10px">Поставок нет</td></tr>';return;}b.innerHTML=fboShipments.map(i=>{var batchLabel=i.batch_public_id?String(i.batch_public_id):(((i.batch_name?String(i.batch_name):'Партия')+' - '+(i.batch_seq_no||i.batch_id||'—')));return '<tr><td>'+escapeHtml(i.public_id||('#'+i.id))+'</td><td>'+escapeHtml(batchLabel)+'</td><td>'+escapeHtml(i.source_name||'—')+'</td><td><span class="chip">'+escapeHtml(i.status||'draft')+'</span></td><td>'+escapeHtml(i.warehouses_count||0)+'</td><td class="toolbar"><button class="api-btn" onclick="setActiveShipment('+i.id+')">Выбрать</button><button class="api-btn danger" onclick="deleteShipment('+i.id+')">Удалить</button></td></tr>';}).join('');if(!activeShipmentId&&fboShipments.length)setActiveShipment(fboShipments[0].id);}
 async function loadShipmentWarehouses(){var b=document.getElementById('shipmentWarehousesBody');if(!activeShipmentId){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Сначала выбери поставку</td></tr>';fboShipmentWarehouses=[];return;}const d=await apiGet('/api/fbo/shipments/'+activeShipmentId+'/warehouses');fboShipmentWarehouses=(d&&d.success&&Array.isArray(d.items))?d.items:[];if(!fboShipmentWarehouses.length){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Складов в поставке нет</td></tr>';return;}b.innerHTML=fboShipmentWarehouses.map(i=>'<tr><td>'+escapeHtml(i.warehouse_name||'—')+'</td><td>'+escapeHtml(i.wb_code||'—')+'</td><td><button class="api-btn" onclick="setActiveShipmentWarehouse('+i.id+',\\''+escapeHtml(i.warehouse_name||('ID '+i.warehouse_id))+'\\')">Выбрать</button></td><td><button class="api-btn danger" onclick="removeShipmentWarehouse('+i.id+')">Удалить</button></td></tr>').join('');if(!activeShipmentWarehouseId&&fboShipmentWarehouses.length){var first=fboShipmentWarehouses[0];setActiveShipmentWarehouse(first.id, first.warehouse_name||('ID '+first.warehouse_id));}}
 async function loadBoxes(){var b=document.getElementById('boxesBody');if(!activeShipmentWarehouseId){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Сначала выбери склад в поставке</td></tr>';fboBoxes=[];renderScans();return;}const d=await apiGet('/api/fbo/boxes?shipmentWarehouseId='+activeShipmentWarehouseId);fboBoxes=(d&&d.success&&Array.isArray(d.items))?d.items:[];if(!fboBoxes.length){b.innerHTML='<tr><td colspan="4" class="cash-muted" style="text-align:center;padding:10px">Коробов нет</td></tr>';renderScans();return;}b.innerHTML=fboBoxes.map(i=>'<tr><td>Короб №'+escapeHtml(i.box_no)+'</td><td>'+escapeHtml(formatDate(i.created_at))+'</td><td><button class="api-btn" onclick="setActiveBox('+i.id+',\\'Короб №'+escapeHtml(i.box_no)+'\\')">Выбрать</button></td><td><button class="api-btn danger" onclick="deleteBox('+i.id+')">Удалить</button></td></tr>').join('');if(!activeBoxId&&fboBoxes.length){var first=fboBoxes[0];setActiveBox(first.id,'Короб №'+first.box_no);}else{loadRecentScans();}}
 async function loadRecentScans(){if(!activeShipmentId){fboRecentScans=[];renderScans();return;}const d=await apiGet('/api/fbo/scans/recent?shipmentId='+activeShipmentId);fboRecentScans=(d&&d.success&&Array.isArray(d.items))?d.items:[];renderScans();}
@@ -6916,9 +7423,10 @@ function renderScans(){var b=document.getElementById('scanEventsBody');if(!activ
 
 async function createSource(){var n=prompt('Название источника');if(!n||!n.trim())return;const d=await apiPost('/api/fbo/sources',{name:n.trim()});if(!d||!d.success)return alert((d&&d.error)||'Ошибка');await loadSources();}
 async function deleteSource(){var id=parseInt(document.getElementById('sourceSelect').value||'0',10);if(!id)return alert('Выбери источник');if(!confirm('Удалить источник?'))return;const d=await apiDelete('/api/fbo/sources/'+id);if(!d.success)return alert(d.error||'Ошибка');await loadSources();}
+async function createBatch(){var businessId=parseInt(document.getElementById('batchBusinessSelect').value||'0',10);if(!businessId)return alert('Выбери магазин для партии');const d=await apiPost('/api/fbo/batches',{business_id:businessId});if(!d||!d.success)return alert((d&&d.error)||'Ошибка');await loadBatches();if(d.item&&d.item.id){var s=document.getElementById('batchSelect');if(s)s.value=String(d.item.id);}}
 async function createWarehouse(){var n=prompt('Название склада WB (добавится только в общий список)');if(!n||!n.trim())return;const d=await apiPost('/api/fbo/warehouses',{name:n.trim()});if(!d||!d.success)return alert((d&&d.error)||'Ошибка');await loadWarehouses();}
 async function deleteWarehouse(){var id=parseInt(document.getElementById('warehouseSelect').value||'0',10);if(!id)return alert('Выбери склад');if(!confirm('Удалить склад?'))return;const d=await apiDelete('/api/fbo/warehouses/'+id);if(!d.success)return alert(d.error||'Ошибка');await loadWarehouses();}
-async function createShipment(){var sourceId=parseInt(document.getElementById('sourceSelect').value||'0',10);if(!sourceId)return alert('Выбери источник');const d=await apiPost('/api/fbo/shipments',{source_id:sourceId});if(!d.success)return alert(d.error||'Ошибка');await loadShipments();if(d.item&&d.item.id)setActiveShipment(d.item.id);}
+async function createShipment(){var sourceId=parseInt(document.getElementById('sourceSelect').value||'0',10);var batchId=parseInt(document.getElementById('batchSelect').value||'0',10);if(!sourceId)return alert('Выбери источник');if(!batchId)return alert('Выбери партию');const d=await apiPost('/api/fbo/shipments',{source_id:sourceId,batch_id:batchId});if(!d.success)return alert(d.error||'Ошибка');await loadShipments();if(d.item&&d.item.id)setActiveShipment(d.item.id);}
 async function deleteShipment(id){if(!confirm('Удалить поставку?'))return;const d=await apiDelete('/api/fbo/shipments/'+id);if(!d.success)return alert(d.error||'Ошибка');if(activeShipmentId===id)setActiveShipment(null);await loadShipments();}
 async function attachWarehouseToShipment(){if(!activeShipmentId)return alert('Сначала выбери поставку');var warehouseId=parseInt(document.getElementById('warehouseSelect').value||'0',10);if(!warehouseId)return alert('Выбери склад из списка');if(!Array.isArray(fboWarehouses)||!fboWarehouses.some(function(w){return Number(w.id)===warehouseId;}))return alert('Можно добавить только склад из списка');const d=await apiPost('/api/fbo/shipments/'+activeShipmentId+'/warehouses',{warehouse_id:warehouseId});if(!d.success)return alert(d.error||'Ошибка');await loadShipmentWarehouses();await loadShipments();}
 async function removeShipmentWarehouse(id){if(!confirm('Удалить склад из поставки?'))return;const d=await apiDelete('/api/fbo/shipment-warehouses/'+id);if(!d.success)return alert(d.error||'Ошибка');if(activeShipmentWarehouseId===id){activeShipmentWarehouseId=null;activeBoxId=null;}await loadShipmentWarehouses();await loadShipments();}
@@ -6932,6 +7440,7 @@ function bindShipmentsActions(){
     ['btnRefreshShipments', bootstrapAll],
     ['btnCreateSource', createSource],
     ['btnDeleteSource', deleteSource],
+    ['btnCreateBatch', createBatch],
     ['btnCreateShipment', createShipment],
     ['btnCreateWarehouse', createWarehouse],
     ['btnDeleteWarehouse', deleteWarehouse],
@@ -6970,7 +7479,7 @@ window.setActiveBox = setActiveBox;
 
 document.getElementById('scanBarcodeInput').addEventListener('keydown', async function(e){if(e.key!=='Enter')return; e.preventDefault(); var barcode=String(e.target.value||'').trim(); if(!barcode)return; if(!activeShipmentId)return alert('Сначала выбери поставку'); if(!activeShipmentWarehouseId)return alert('Сначала выбери склад в поставке'); if(!activeBoxId)return alert('Сначала выбери короб'); var d=await apiPost('/api/fbo/scans',{shipment_id:activeShipmentId,box_id:activeBoxId,barcode:barcode}); if(!d.success)return alert(d.error||'Ошибка'); e.target.value=''; await loadRecentScans();});
 
-async function bootstrapAll(){await loadSources();await loadWarehouses();await loadShipments();if(activeShipmentId){await loadShipmentWarehouses();if(activeShipmentWarehouseId){await loadBoxes();}else{renderScans();}}}
+async function bootstrapAll(){await loadSources();await loadBatchBusinesses();await loadBatches();await loadWarehouses();await loadShipments();if(activeShipmentId){await loadShipmentWarehouses();if(activeShipmentWarehouseId){await loadBoxes();}else{renderScans();}}}
 bindShipmentsActions();
 bootstrapAll();
 </script>
@@ -6980,18 +7489,57 @@ bootstrapAll();
 // Отдельная страница отгрузок 2 (альтернативный интерфейс в текущем стиле)
 app.get('/shipments-2', requireAuth, async (req, res) => {
   try {
+    const { ownerAccountId, actorUserId } = await getFboScope(req);
     const { data: existingShipments, error: shipmentsError } = await supabase
       .from('fbo_shipments')
       .select('id')
-      .eq('account_id', req.account.id)
+      .eq('account_id', ownerAccountId)
       .limit(1);
     if (!shipmentsError && (!existingShipments || existingShipments.length === 0)) {
+      const { data: firstBusiness } = await supabase
+        .from('businesses')
+        .select('id, company_name')
+        .eq('account_id', ownerAccountId)
+        .eq('is_active', true)
+        .order('id', { ascending: true })
+        .limit(1)
+        .single();
+
+      if (!firstBusiness || !firstBusiness.id) {
+        throw new Error('Нет активного магазина для создания партии');
+      }
+
+      const { data: existingBatch } = await supabase
+        .from('fbo_batches')
+        .select('id')
+        .eq('account_id', ownerAccountId)
+        .eq('business_id', firstBusiness.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      let batchId = existingBatch && existingBatch.id ? existingBatch.id : null;
+      if (!batchId) {
+        const { data: batch, error: batchError } = await supabase
+          .from('fbo_batches')
+          .insert({
+            account_id: ownerAccountId,
+            business_id: firstBusiness.id,
+            name: firstBusiness.company_name,
+            created_by_user_id: actorUserId
+          })
+          .select('id')
+          .single();
+        if (batchError) throw batchError;
+        batchId = batch.id;
+      }
+
       const { data: source, error: sourceError } = await supabase
         .from('fbo_sources')
         .insert({
-          account_id: req.account.id,
+          account_id: ownerAccountId,
           name: 'Тестовый источник (shipments-2)',
-          created_by_user_id: req.account.id
+          created_by_user_id: actorUserId
         })
         .select('id')
         .single();
@@ -7000,10 +7548,10 @@ app.get('/shipments-2', requireAuth, async (req, res) => {
       const { data: warehouse, error: warehouseError } = await supabase
         .from('fbo_warehouses')
         .insert({
-          account_id: req.account.id,
+          account_id: ownerAccountId,
           name: 'Тестовый склад (shipments-2)',
           wb_code: 'TEST-WH',
-          created_by_user_id: req.account.id
+          created_by_user_id: actorUserId
         })
         .select('id')
         .single();
@@ -7012,9 +7560,10 @@ app.get('/shipments-2', requireAuth, async (req, res) => {
       const { data: shipment, error: shipmentError } = await supabase
         .from('fbo_shipments')
         .insert({
-          account_id: req.account.id,
+          account_id: ownerAccountId,
           source_id: source.id,
-          created_by_user_id: req.account.id
+          batch_id: batchId,
+          created_by_user_id: actorUserId
         })
         .select('id')
         .single();
@@ -7025,7 +7574,7 @@ app.get('/shipments-2', requireAuth, async (req, res) => {
         .insert({
           shipment_id: shipment.id,
           warehouse_id: warehouse.id,
-          created_by_user_id: req.account.id
+          created_by_user_id: actorUserId
         });
       if (linkError) throw linkError;
     }
@@ -7088,19 +7637,27 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 .api-btn:hover{border-color:#38bdf8}
 .table-wrap{max-height:72vh;overflow:auto;border:1px solid rgba(148,163,184,0.2);border-radius:10px}
 .cash-table{width:100%;border-collapse:collapse}
-.cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:8px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:2}
-.cash-table td{padding:8px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:10px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:10}
+.cash-table td{padding:10px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
 .cash-muted{color:#94a3b8;font-size:12px}
 .check-col{width:40px;text-align:center}
-.shipment-name{font-size:18px;font-weight:700;letter-spacing:0.2px;color:#f8fafc}
+.date-col{width:1%;white-space:nowrap}
+.shipment-name{font-size:12px;font-weight:600;letter-spacing:0;color:#f8fafc}
 .meta-col{font-size:12px;color:#cbd5f5;white-space:nowrap}
 .actions-cell{width:170px;text-align:right;white-space:nowrap}
-.icon-btn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;margin-left:6px}
+.icon-btn{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;margin-left:6px;transition:all 0.2s}
 .icon-btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
-.icon-btn:hover{border-color:#38bdf8;color:#fff}
-.icon-btn.danger{border-color:rgba(239,68,68,0.45);color:#fca5a5}
-.icon-btn.danger:hover{border-color:#ef4444;color:#fecaca}
+.icon-btn:hover{transform:translateY(-2px);border-color:#38bdf8;color:#fff;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
+.row-action-btn{display:inline-flex;align-items:center;justify-content:center;padding:6px 8px;line-height:0;border-radius:10px;border:1px solid rgba(148,163,184,0.35);background:transparent;color:#e2e8f0;cursor:pointer;margin-left:6px;transition:all 0.2s}
+.row-action-btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.row-action-btn:hover{transform:translateY(-2px);border-color:#38bdf8;color:#fff;box-shadow:0 10px 22px rgba(56,189,248,0.2)}
 .row-check,.head-check{width:15px;height:15px;accent-color:#38bdf8;cursor:pointer}
+.edit-form-grid{display:grid;grid-template-columns:1fr;gap:12px}
+.edit-field{display:flex;flex-direction:column;gap:6px}
+.edit-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.4px;text-transform:uppercase}
+.edit-select{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
+.edit-select:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
+.edit-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
 @media (max-width: 900px){.layout{flex-direction:column;padding-left:0}.sidebar{width:100%;height:auto;position:relative}.shipment-name{font-size:16px}}
 </style></head><body>
 <div class="layout">
@@ -7120,8 +7677,11 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
             <thead>
               <tr>
                 <th class="check-col"><input id="shipments2CheckAll" class="head-check" type="checkbox" /></th>
+                <th class="date-col">Дата поставки</th>
                 <th>Название поставки</th>
-                <th>Дата поставки</th>
+                <th>Партия</th>
+                <th>Коробов</th>
+                <th>Единиц товара</th>
                 <th>Автор</th>
                 <th class="actions-cell"></th>
               </tr>
@@ -7135,6 +7695,28 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 </div>
 ${renderProfileModal()}
 ${renderProfileScript()}
+<div id="shipment2EditModal" class="modal" onclick="closeShipment2EditModalOnOutsideClick(event)">
+  <div class="modal-content" style="max-width:620px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h2>Редактировать поставку</h2>
+      <button class="close-btn" type="button" onclick="closeShipment2EditModal()">&times;</button>
+    </div>
+    <div class="edit-form-grid">
+      <div class="edit-field">
+        <label class="edit-label" for="shipment2EditSource">Источник</label>
+        <select id="shipment2EditSource" class="edit-select"></select>
+      </div>
+      <div class="edit-field">
+        <label class="edit-label" for="shipment2EditBatch">Партия</label>
+        <select id="shipment2EditBatch" class="edit-select"></select>
+      </div>
+    </div>
+    <div class="edit-actions">
+      <button class="api-btn" type="button" onclick="closeShipment2EditModal()">Отмена</button>
+      <button class="api-btn" type="button" onclick="saveShipment2Edit()">Сохранить</button>
+    </div>
+  </div>
+</div>
 <script>
 function escapeHtml(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;');}
 function authHeaders(json){
@@ -7166,10 +7748,38 @@ async function apiRequest(path, options){
   }
 }
 async function apiGet(path){ return apiRequest(path,{ headers: authHeaders(false) }); }
+async function apiPut(path, body){ return apiRequest(path,{ method:'PUT', headers: authHeaders(true), body: JSON.stringify(body||{}) }); }
 async function apiDelete(path){ return apiRequest(path,{ method:'DELETE', headers: authHeaders(false) }); }
 
+var shipments2Items = [];
+var shipments2Sources = [];
+var shipments2Batches = [];
+var shipment2EditingId = null;
+
 function getShipmentDisplayName(item){
-  return item && item.public_id ? item.public_id : ('#' + (item && item.id ? item.id : '')); 
+  if (item && item.public_id) return item.public_id;
+  if (item && item.id) return '#' + item.id;
+  return '—';
+}
+
+function formatDashValue(value){
+  if (value === null || value === undefined) return '—';
+  var text = String(value).trim();
+  return text ? text : '—';
+}
+
+function formatDashCount(value){
+  var num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return '—';
+  return String(num);
+}
+
+function getBatchDisplayName(item){
+  if (!item || !item.batch_id) return '—';
+  if (item.batch_public_id) return String(item.batch_public_id);
+  var batchName = item.batch_name ? String(item.batch_name) : 'Партия';
+  var batchCode = item.batch_seq_no ? String(item.batch_seq_no) : String(item.batch_id);
+  return batchName + ' - ' + batchCode;
 }
 
 function formatDateOnly(value){
@@ -7181,7 +7791,7 @@ function formatDateOnly(value){
 
 function getShipmentAuthor(item){
   if (!item) return '—';
-  if (item.created_by_user_id) return 'ID ' + item.created_by_user_id;
+  if (item.created_by_user_login) return String(item.created_by_user_login);
   return '—';
 }
 
@@ -7199,23 +7809,30 @@ async function loadShipments2(){
   if (head) head.checked = false;
   var data = await apiGet('/api/fbo/shipments');
   var items = (data && data.success && Array.isArray(data.items)) ? data.items : [];
+  shipments2Items = items;
   if (!items.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="cash-muted" style="text-align:center;padding:12px">Поставок нет</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="cash-muted" style="text-align:center;padding:12px">Поставок нет</td></tr>';
     return;
   }
   tbody.innerHTML = items.map(function(item){
-    var title = escapeHtml(getShipmentDisplayName(item));
-    var date = escapeHtml(formatDateOnly(item.created_at));
-    var author = escapeHtml(getShipmentAuthor(item));
+    var title = escapeHtml(formatDashValue(getShipmentDisplayName(item)));
+    var batch = escapeHtml(formatDashValue(getBatchDisplayName(item)));
+    var boxes = escapeHtml(formatDashCount(item.boxes_count));
+    var units = escapeHtml(formatDashCount(item.items_count));
+    var date = escapeHtml(formatDashValue(formatDateOnly(item.created_at)));
+    var author = escapeHtml(formatDashValue(getShipmentAuthor(item)));
     return '<tr>'
       + '<td class="check-col"><input class="row-check" type="checkbox" data-id="' + item.id + '" /></td>'
+      + '<td class="meta-col date-col">' + date + '</td>'
       + '<td><span class="shipment-name">' + title + '</span></td>'
-      + '<td class="meta-col">' + date + '</td>'
+      + '<td class="meta-col">' + batch + '</td>'
+      + '<td class="meta-col">' + boxes + '</td>'
+      + '<td class="meta-col">' + units + '</td>'
       + '<td class="meta-col">' + author + '</td>'
       + '<td class="actions-cell">'
       + '<button class="icon-btn" type="button" title="Детали" onclick="openShipment2Details(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /></svg></button>'
-      + '<button class="icon-btn" type="button" title="Редактировать" onclick="editShipment2(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21l3.8-1 11-11-2.8-2.8-11 11L3 21z" /><path d="M14 5l2.8 2.8" /></svg></button>'
-      + '<button class="icon-btn danger" type="button" title="Удалить" onclick="deleteShipment2(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /></svg></button>'
+      + '<button class="row-action-btn" type="button" title="Редактировать" onclick="editShipment2(' + item.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>'
+      + '<button class="row-action-btn" type="button" title="Удалить" onclick="deleteShipment2(' + item.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>'
       + '</td>'
       + '</tr>';
   }).join('');
@@ -7228,17 +7845,91 @@ async function deleteShipment2(id){
   await loadShipments2();
 }
 
-function openShipment2Details(id){
-  window.location.href = '/shipments';
+async function ensureShipment2EditDictionaries(){
+  var [sourcesRes, batchesRes] = await Promise.all([
+    apiGet('/api/fbo/sources'),
+    apiGet('/api/fbo/batches')
+  ]);
+  shipments2Sources = (sourcesRes && sourcesRes.success && Array.isArray(sourcesRes.items)) ? sourcesRes.items : [];
+  shipments2Batches = (batchesRes && batchesRes.success && Array.isArray(batchesRes.items)) ? batchesRes.items : [];
 }
 
-function editShipment2(){
-  alert('Редактирование названия пока не меняет логику именования. Названия отображаются как на текущей странице /shipments.');
+function fillShipment2EditSelects(selectedSourceId, selectedBatchId){
+  var sourceEl = document.getElementById('shipment2EditSource');
+  var batchEl = document.getElementById('shipment2EditBatch');
+  if (!sourceEl || !batchEl) return;
+
+  sourceEl.innerHTML = shipments2Sources.length
+    ? shipments2Sources.map(function(item){ return '<option value="' + item.id + '">' + escapeHtml(item.name || ('ID ' + item.id)) + '</option>'; }).join('')
+    : '<option value="">Нет источников</option>';
+
+  batchEl.innerHTML = shipments2Batches.length
+    ? shipments2Batches.map(function(item){
+        var label = item.public_id ? String(item.public_id) : ((item.name ? String(item.name) : 'Партия') + ' - ' + (item.seq_no || item.id));
+        return '<option value="' + item.id + '">' + escapeHtml(label) + '</option>';
+      }).join('')
+    : '<option value="">Нет партий</option>';
+
+  if (selectedSourceId) sourceEl.value = String(selectedSourceId);
+  if (selectedBatchId) batchEl.value = String(selectedBatchId);
+}
+
+function closeShipment2EditModal(){
+  var modal = document.getElementById('shipment2EditModal');
+  if (modal) modal.classList.remove('active');
+  shipment2EditingId = null;
+}
+
+function closeShipment2EditModalOnOutsideClick(event){
+  if (event && event.target && event.target.id === 'shipment2EditModal') {
+    closeShipment2EditModal();
+  }
+}
+
+async function editShipment2(id){
+  var shipment = (shipments2Items || []).find(function(item){ return Number(item.id) === Number(id); });
+  if (!shipment) {
+    alert('Поставка не найдена');
+    return;
+  }
+  await ensureShipment2EditDictionaries();
+  if (!shipments2Sources.length || !shipments2Batches.length) {
+    alert('Недостаточно данных для редактирования (источники/партии)');
+    return;
+  }
+  shipment2EditingId = Number(id);
+  fillShipment2EditSelects(shipment.source_id, shipment.batch_id);
+  var modal = document.getElementById('shipment2EditModal');
+  if (modal) modal.classList.add('active');
+}
+
+async function saveShipment2Edit(){
+  if (!shipment2EditingId) return;
+  var sourceId = parseInt((document.getElementById('shipment2EditSource') || {}).value || '0', 10);
+  var batchId = parseInt((document.getElementById('shipment2EditBatch') || {}).value || '0', 10);
+  if (!sourceId || !batchId) {
+    alert('Выбери источник и партию');
+    return;
+  }
+  var result = await apiPut('/api/fbo/shipments/' + shipment2EditingId, { source_id: sourceId, batch_id: batchId });
+  if (!result || !result.success) {
+    alert((result && result.error) || 'Ошибка обновления поставки');
+    return;
+  }
+  closeShipment2EditModal();
+  await loadShipments2();
+}
+
+function openShipment2Details(id){
+  window.location.href = '/shipments';
 }
 
 window.deleteShipment2 = deleteShipment2;
 window.openShipment2Details = openShipment2Details;
 window.editShipment2 = editShipment2;
+window.closeShipment2EditModal = closeShipment2EditModal;
+window.closeShipment2EditModalOnOutsideClick = closeShipment2EditModalOnOutsideClick;
+window.saveShipment2Edit = saveShipment2Edit;
 
 document.getElementById('btnRefreshShipments2').addEventListener('click', function(){ loadShipments2(); });
 bindCheckAll();

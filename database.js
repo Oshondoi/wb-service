@@ -157,7 +157,7 @@ async function updateAccountPassword(accountId, newPassword) {
  * Обновление профиля аккаунта (поддерживаемые поля)
  */
 async function updateAccountProfile(accountId, updates) {
-  const allowedFields = ['username', 'email'];
+  const allowedFields = ['email'];
   const filteredUpdates = {};
 
   for (const key of Object.keys(updates || {})) {
@@ -179,7 +179,7 @@ async function updateAccountProfile(accountId, updates) {
 
   if (error) {
     if (error.code === '23505') {
-      throw new Error('Логин или email уже заняты');
+      throw new Error('Email уже занят');
     }
     throw error;
   }

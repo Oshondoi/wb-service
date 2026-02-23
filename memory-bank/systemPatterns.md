@@ -17,6 +17,10 @@ Key Decisions:
 - **Database-first approach**: All users and API keys stored in SQLite
 - **CASCADE DELETE**: Removing account deletes all its businesses
 - **Auto-migration**: First run migrates old `wb-api-key.txt` to database
+- **FBO ownership**: если действует сотрудник, owner данных — аккаунт владельца (через account_members scope)
+- **FBO hierarchy**: `fbo_batches` (партия, parent) → `fbo_shipments` (child)
+- **Profile login immutable**: логин аккаунта не редактируется в профиле (readonly UI + API не обновляет username)
+- **Debt Excel export**: используется настоящий `.xlsx` (через библиотеку `xlsx` на backend), а не HTML под видом `.xls`
 
 Design Patterns:
 - Fallback chaining for external data
@@ -45,12 +49,15 @@ Critical Paths:
 - `/api/cash/debts`: debts CRUD
 - `/api/cash/transactions/bulk`: bulk delete cashflow operations
 - `/api/cash/debts/bulk`: bulk delete debt records
+- `/api/cash/debts/export-xlsx`: формирование и отдача настоящего XLSX-файла по выбранным записям долгов
 - `/wb-price-csv`: minimal, fast, public; returns `price,name`
 - `/wb-max`: rich JSON with seller info, stocks, rating, images (requires auth)
 - `/`: Cashflow (ДДС) main page
 - `/fin-report`: Financial dashboard with business selector and management UI
 - `/shipments`: Пошаговые отгрузки (источник → поставка → склад в поставке → короб → скан)
 - `/shipments-2`: Альтернативный (сравнительный) интерфейс списка поставок на тех же сущностях FBO
+- `/api/fbo/batches`: CRUD-минимум для партий (список/создание)
+- `/api/fbo/shipments`: список/создание поставок с `batch_id` и owner-scope
 - `/auth`: Unified login + registration page
 
 Cashflow UX Patterns:
@@ -58,6 +65,7 @@ Cashflow UX Patterns:
 - Перед сохранением операции/долга показывается модалка подтверждения
 - Редактирование операций/долгов выполняется через модалки с сохранением по кнопке
 - В «Записях долгов» поддерживаются комбинированные фильтры (тип + контрагент + магазин) и экспорт в Excel
+- Экспорт «Записей долгов» должен оставаться в формате `.xlsx` без браузерного HTML-экспорта, чтобы избежать предупреждений Excel о формате файла
 - Для dropdown-меню фильтров использовать безопасную привязку обработчиков (`data-*` + `addEventListener`), избегая сложных inline `onclick`
 
 Navigation UX Patterns:

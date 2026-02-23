@@ -3,6 +3,7 @@
 Stack:
 - Node.js (>=18), Express 5, axios, cors, express-session, cookie-parser
 - **@supabase/supabase-js** for Supabase PostgreSQL + Auth (email/password)
+- **xlsx** for generating true `.xlsx` exports on backend
 - **crypto** (built-in) for password hashing
 
 Database:
