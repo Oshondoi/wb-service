@@ -1,3 +1,3 @@
-require('./fin-report');
+require('./src/server');
 
 

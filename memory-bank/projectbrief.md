@@ -11,7 +11,7 @@ Core Goals:
 - Integrate smoothly with Google Sheets via Apps Script
 
 Scope:
-- Entrypoint `index.js` подключает основной серверный файл `fin-report.js`
+- Entrypoint `index.js` запускает модульный серверный путь `src/server.js -> src/app.js`
 - Separate `database.js` module for Supabase operations
 - **Main page (`/`)**: Cashflow (ДДС) + долги
 - **Secondary page (`/fin-report`)**: Financial Report dashboard with per-company reporting

@@ -1,7 +1,7 @@
 # System Patterns
 
 Architecture:
-- Node.js + Express main server file (`fin-report.js`) loaded by `index.js`
+- Node.js + Express modular runtime: `index.js` -> `src/server.js` -> `src/app.js`
 - **Supabase PostgreSQL** (через `database.js` + `supabase-client.js`)
 - Database-driven authentication with password hashing
 - Multi-company support (one account → many businesses)
@@ -21,6 +21,8 @@ Key Decisions:
 - **FBO hierarchy**: `fbo_batches` (партия, parent) → `fbo_shipments` (child)
 - **Profile login immutable**: логин аккаунта не редактируется в профиле (readonly UI + API не обновляет username)
 - **Debt Excel export**: используется настоящий `.xlsx` (через библиотеку `xlsx` на backend), а не HTML под видом `.xls`
+- **FBO system warehouses policy**: системные склады имеют фиксированный набор имён; их нельзя вручную создать с системным именем и нельзя удалить
+- **Shipments-2 warehouse rendering**: отображение склада в `/shipments-2` всегда в едином EN/RU-формате (без пользовательского toggle)
 
 Design Patterns:
 - Fallback chaining for external data
@@ -30,6 +32,7 @@ Design Patterns:
 - **Hybrid Auth**: Supabase Auth (email/password, JWT token) + legacy accounts by username
 - **Auth via httpOnly cookies** (token = account.id or JWT) for serverless compatibility
 - **Password hashing** with SHA256 + salt (pbkdf2, 1000 iterations)
+- **Password recovery flow**: запуск из модалки профиля -> email reset link -> `/auth?mode=recovery` -> установка нового пароля
 - **Business ownership verification**: API checks that business belongs to current account
 
 Database Patterns:
@@ -41,6 +44,8 @@ Database Patterns:
 Critical Paths:
 - `/api/login`: POST endpoint authenticates via Supabase (email) or legacy username, returns token
 - `/api/register`: POST endpoint creates Supabase user and local account
+- `/api/profile/reset-password`: отправка recovery email из модалки профиля (requires auth)
+- `/api/auth/reset-password-confirm`: установка нового пароля по recovery-токену (public)
 - `/api/businesses`: GET/POST for listing and creating companies
 - `/api/businesses/:id`: PUT/DELETE for updating and removing companies
 - `/api/wb-finance`: GET financial data for specific business (via `businessId` param)
@@ -58,7 +63,15 @@ Critical Paths:
 - `/shipments-2`: Альтернативный (сравнительный) интерфейс списка поставок на тех же сущностях FBO
 - `/api/fbo/batches`: CRUD-минимум для партий (список/создание)
 - `/api/fbo/shipments`: список/создание поставок с `batch_id` и owner-scope
+- `/api/fbo/warehouses`: список/создание/удаление складов с защитой системного набора и автодозаполнением системных складов на аккаунт
 - `/auth`: Unified login + registration page
+
+Shipments-2 UX Patterns:
+- Цветовая индикация статусов поставок в таблице: `draft` (жёлтый), `done` (зелёный), `canceled` (красный)
+- Порядок колонок в списке поставок: чекбокс → дата → название → партия → склад → короба → товар → статус → автор → действия
+- Размерные метрики `/shipments-2` должны совпадать с главной страницей для визуальной консистентности (чекбокс-колонка 32px, нативный checkbox-size, компактные тулбар-кнопки)
+- В тулбаре `/shipments-2` поддерживаются быстрые действия создания сущностей (в т.ч. кнопка «Создать партию»)
+- Для inline-скриптов `/shipments-2` критично корректное экранирование спецсимволов (`\\n`) в JS-строках, иначе рендер страницы падает с `Invalid or unexpected token`
 
 Cashflow UX Patterns:
 - В ДДС «Создать новый…» сначала сохраняет в памяти, запись в БД — только после «Добавить»
@@ -67,6 +80,8 @@ Cashflow UX Patterns:
 - В «Записях долгов» поддерживаются комбинированные фильтры (тип + контрагент + магазин) и экспорт в Excel
 - Экспорт «Записей долгов» должен оставаться в формате `.xlsx` без браузерного HTML-экспорта, чтобы избежать предупреждений Excel о формате файла
 - Для dropdown-меню фильтров использовать безопасную привязку обработчиков (`data-*` + `addEventListener`), избегая сложных inline `onclick`
+- В `Долги -> Список контрагентов` колонка «Магазин» показывается в основной таблице в позиции между «Прогресс» и «Всего»
+- В `Долги -> Записи` колонка «Создана» должна быть между «Комментарий» и «Действия», формат даты/времени синхронизирован с разделом `Движение`
 
 Navigation UX Patterns:
 - Основная навигация вынесена в левый вертикальный сайдбар
@@ -76,6 +91,7 @@ Navigation UX Patterns:
 - Настройки профиля открываются из верхней иконки сайдбара через единый обработчик `openProfileModal()`
 - Используется единая реализация профиля: `renderProfileModal()` + `renderProfileScript()` на всех страницах
 - В профиле `login` и `name` — отдельные поля с разным назначением (логин аккаунта ≠ отображаемое имя)
+- В модалке профиля доступна отдельная action-кнопка сброса пароля на email
 - На каждом route с профилем обязательны базовые modal-стили (`.modal`, `.modal-content`, `.modal-header`, `.close-btn`) и профильные классы (`.profile-*`), иначе блок профиля рендерится inline
 
 Stocks (Остатки) UX Patterns:

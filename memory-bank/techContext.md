@@ -13,7 +13,7 @@ Database:
 - Foreign keys enabled with CASCADE DELETE
 
 Setup:
-- Entry `index.js` loads `fin-report.js`, `npm start` runs server
+- Runtime entry is modular: `index.js` -> `src/server.js` -> `src/app.js`; `npm start` runs `node index.js`
 - Database auto-initialized on first run
 - Auto-migration from `wb-api-key.txt` if exists
 - Deployed to Vercel; public endpoints needed for Sheets
@@ -23,6 +23,7 @@ Constraints:
 - Local container may have limited external access
 - SQLite database stored locally (not suitable for distributed serverless)
 - Supabase Auth email confirmation must be enabled for new signups
+- Для recovery flow пароля в Supabase должен быть разрешён redirect URL приложения (`/auth?mode=recovery`) в `Authentication -> URL Configuration`
 
 Dependencies:
 - Wildberries card API v2/v1, basket CDN, product HTML pages, seller page HTML
