@@ -279,6 +279,9 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 .cash-table{width:100%;border-collapse:collapse}
 .cash-table th{background:#0b1220;color:#e2e8f0;font-size:12px;text-align:left;padding:10px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:10}
 .cash-table td{padding:10px;border-bottom:1px solid rgba(148,163,184,0.15);font-size:12px;color:#e2e8f0}
+.shipment2-click-cell{cursor:pointer;transition:background-color 0.16s ease,color 0.16s ease,box-shadow 0.16s ease}
+.shipment2-row.active-hover .shipment2-click-cell{background:rgba(56,189,248,0.08);color:#f8fafc;box-shadow:inset 0 0 0 1px rgba(56,189,248,0.22)}
+.shipment2-row.active-hover .shipment-name{text-shadow:0 0 10px rgba(125,211,252,0.18)}
 .cash-muted{color:#94a3b8;font-size:12px}
 .check-col{width:32px;text-align:center}
 .date-col{width:1%;white-space:nowrap}
@@ -303,10 +306,56 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 .edit-label{font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:0.4px;text-transform:uppercase}
 .edit-select{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.3);border-radius:10px;font-size:12px;font-weight:600;background:rgba(15,23,42,0.85);color:#e2e8f0}
 .edit-select:focus{outline:none;border-color:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,0.12)}
+#shipment2BatchWarehouseCount::-webkit-outer-spin-button,
+#shipment2BatchWarehouseCount::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+#shipment2BatchWarehouseCount{-moz-appearance:textfield;appearance:textfield}
 .edit-static{width:100%;padding:10px 12px;border:1px solid rgba(148,163,184,0.2);border-radius:10px;font-size:12px;font-weight:600;background:rgba(2,6,23,0.55);color:#e2e8f0;min-height:38px;display:flex;align-items:center}
 .edit-list{display:flex;flex-wrap:wrap;gap:6px;min-height:38px}
 .edit-pill{display:inline-flex;align-items:center;padding:6px 8px;border-radius:999px;border:1px solid rgba(148,163,184,0.35);background:rgba(15,23,42,0.85);color:#cbd5f5;font-size:11px;font-weight:600}
 .edit-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
+.batch-modal-note{font-size:12px;color:#94a3b8;line-height:1.45;margin:0 0 12px}
+.batch-modal-error{font-size:12px;color:#fca5a5;line-height:1.4;min-height:18px;margin-top:8px}
+.batch-modal-content{width:min(900px,calc(100vw - 48px));min-height:560px;display:flex;flex-direction:column}
+.batch-modal-body{flex:1;display:flex;flex-direction:column}
+.batch-modal-footer{margin-top:auto;border-top:1px solid rgba(148,163,184,0.2);padding-top:14px}
+.batch-footer-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wizard-step{display:none}
+.wizard-step.active{display:block}
+.wizard-title{font-size:12px;font-weight:700;letter-spacing:0.35px;text-transform:uppercase;color:#7dd3fc;margin:0 0 10px}
+.wizard-success{font-size:12px;color:#86efac;line-height:1.45;margin:0 0 12px}
+.batch-warehouse-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+.batch-product-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px}
+.batch-product-row .edit-field{margin:0}
+.batch-icon-btn{width:38px;height:38px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;transition:all 0.2s}
+.batch-icon-btn svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.batch-icon-btn:hover{border-color:#38bdf8;color:#fff;transform:translateY(-1px)}
+.batch-boxes-grid{display:flex;flex-wrap:nowrap;gap:8px;overflow-x:scroll;overflow-y:hidden;padding-bottom:4px;scrollbar-width:thin;scrollbar-gutter:stable}
+.batch-box-btn{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:10px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:0.25px;text-transform:uppercase;transition:all 0.2s}
+.batch-box-btn:hover{border-color:#38bdf8;color:#fff}
+.batch-box-btn.active{border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0}
+.batch-box-icon{width:14px;height:14px;display:inline-block}
+.batch-box-icon svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.batch-warehouses-grid{display:flex;flex-wrap:nowrap;gap:8px;overflow-x:scroll;overflow-y:hidden;padding-bottom:4px;scrollbar-width:thin;scrollbar-gutter:stable}
+.batch-warehouse-btn{display:inline-flex;align-items:center;gap:8px;padding:7px 10px;border-radius:10px;border:1px solid rgba(148,163,184,0.35);background:rgba(12,18,34,0.75);color:#e2e8f0;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:0.25px;text-transform:uppercase;transition:all 0.2s}
+.batch-warehouse-btn:hover{border-color:#38bdf8;color:#fff}
+.batch-warehouse-btn.active{border-color:#22c55e;background:rgba(34,197,94,0.18);color:#bbf7d0}
+.batch-products-list{margin-top:10px;border:1px solid rgba(148,163,184,0.2);border-radius:10px;overflow-y:auto;overflow-x:hidden;max-height:150px}
+.batch-products-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-bottom:1px solid rgba(148,163,184,0.12);font-size:12px;color:#e2e8f0}
+.batch-products-row:last-child{border-bottom:none}
+.camera-modal-content{width:min(560px,calc(100vw - 48px))}
+.camera-video-wrap{background:#020617;border:1px solid rgba(148,163,184,0.25);border-radius:10px;overflow:hidden}
+.camera-video-wrap video{display:block;width:100%;height:auto;max-height:52vh;background:#020617}
+.camera-hint{font-size:12px;color:#94a3b8;margin-top:8px}
+.manage-modal-content{width:min(760px,calc(100vw - 48px));display:flex;flex-direction:column;max-height:calc(100vh - 48px)}
+.manage-modal-body{display:flex;flex-direction:column;gap:14px}
+.manage-form-row{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:end}
+.manage-list-wrap{border:1px solid rgba(148,163,184,0.2);border-radius:10px;overflow:auto;max-height:52vh}
+.manage-list-table{width:100%;border-collapse:collapse}
+.manage-list-table th{background:#0b1220;color:#e2e8f0;font-size:11px;text-align:left;padding:9px 10px;border-bottom:1px solid rgba(148,163,184,0.25);position:sticky;top:0;z-index:1;text-transform:uppercase;letter-spacing:0.35px}
+.manage-list-table td{padding:9px 10px;border-bottom:1px solid rgba(148,163,184,0.12);font-size:12px;color:#e2e8f0}
+.manage-list-table tr:last-child td{border-bottom:none}
+.manage-actions-cell{text-align:right;white-space:nowrap;width:120px}
+.wizard-step.batch-step5.active{display:flex;flex-direction:column;min-height:300px;gap:6px}
 @media (max-width: 900px){.layout{flex-direction:column;padding-left:0}.sidebar{width:100%;height:auto;position:relative}.shipment-name{font-size:16px}.edit-form-grid{grid-template-columns:1fr}}
 </style></head><body>
 <div class="layout">
@@ -317,7 +366,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 				<div class="toolbar">
 					<button type="button" id="btnCreateShipment2Batch" class="api-btn" style="padding:6px 10px">Создать партию</button>
 					<button type="button" id="btnCreateShipment2Warehouse" class="api-btn" style="padding:6px 10px">Создать склад</button>
-					<button type="button" id="btnRefreshShipments2" class="api-btn" style="padding:6px 10px">Обновить</button>
+					<button type="button" id="btnCreateShipment2Source" class="api-btn" style="padding:6px 10px">Создать источник</button>
 				</div>
 			</div>
 
@@ -328,8 +377,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 							<tr>
 								<th class="check-col"><input id="shipments2CheckAll" class="head-check" type="checkbox" /></th>
 								<th class="date-col">Дата создания</th>
-								<th>Название поставки</th>
 								<th>Партия</th>
+								<th>Название поставки</th>
 								<th>Склад</th>
 								<th>Кол-во коробов</th>
 								<th>Кол-во товара</th>
@@ -347,10 +396,152 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 </div>
 ${renderProfileModal()}
 ${renderProfileScript()}
+<div id="shipment2WarehouseModal" class="modal" onclick="closeShipment2WarehouseModalOnOutsideClick(event)">
+	<div class="modal-content manage-modal-content" onclick="event.stopPropagation()">
+		<div class="modal-header">
+			<h2>Склады</h2>
+			<button class="close-btn" type="button" onclick="closeShipment2WarehouseModal()">&times;</button>
+		</div>
+		<div class="manage-modal-body">
+			<div class="manage-form-row">
+				<div class="edit-field">
+					<label class="edit-label" for="shipment2WarehouseNameInput">Название склада</label>
+					<input id="shipment2WarehouseNameInput" class="edit-select" type="text" autocomplete="off" />
+				</div>
+				<button id="shipment2WarehouseCreateBtn" class="api-btn" type="button" onclick="submitShipment2WarehouseCreate()">Добавить</button>
+			</div>
+			<div id="shipment2WarehouseModalError" class="batch-modal-error"></div>
+			<div class="manage-list-wrap">
+				<table class="manage-list-table">
+					<thead><tr><th>Склад</th><th class="manage-actions-cell"></th></tr></thead>
+					<tbody id="shipment2WarehouseListBody"></tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+</div>
+<div id="shipment2SourceModal" class="modal" onclick="closeShipment2SourceModalOnOutsideClick(event)">
+	<div class="modal-content manage-modal-content" onclick="event.stopPropagation()">
+		<div class="modal-header">
+			<h2>Источники</h2>
+			<button class="close-btn" type="button" onclick="closeShipment2SourceModal()">&times;</button>
+		</div>
+		<div class="manage-modal-body">
+			<div class="manage-form-row">
+				<div class="edit-field">
+					<label class="edit-label" for="shipment2SourceNameInput">Название источника</label>
+					<input id="shipment2SourceNameInput" class="edit-select" type="text" autocomplete="off" />
+				</div>
+				<button id="shipment2SourceCreateBtn" class="api-btn" type="button" onclick="submitShipment2SourceCreate()">Добавить</button>
+			</div>
+			<div id="shipment2SourceModalError" class="batch-modal-error"></div>
+			<div class="manage-list-wrap">
+				<table class="manage-list-table">
+					<thead><tr><th>Источник</th><th class="manage-actions-cell"></th></tr></thead>
+					<tbody id="shipment2SourceListBody"></tbody>
+				</table>
+			</div>
+		</div>
+	</div>
+</div>
+<div id="shipment2BatchModal" class="modal" onclick="closeShipment2BatchModalOnOutsideClick(event)">
+	<div class="modal-content batch-modal-content" onclick="event.stopPropagation()">
+		<div class="modal-header">
+			<h2>Создать партию</h2>
+			<button class="close-btn" type="button" onclick="closeShipment2BatchModal()">&times;</button>
+		</div>
+		<div class="batch-modal-body">
+			<div id="shipment2BatchStep1" class="wizard-step active">
+				<p class="wizard-title">Этап 1/5</p>
+				<div class="edit-field">
+					<label class="edit-label" for="shipment2BatchSourceSelect">Источник</label>
+					<select id="shipment2BatchSourceSelect" class="edit-select"></select>
+				</div>
+			</div>
+			<div id="shipment2BatchStep2" class="wizard-step">
+				<p class="wizard-title">Этап 2/5</p>
+				<div class="edit-field">
+					<label class="edit-label" for="shipment2BatchBusinessSelect">Магазин</label>
+					<select id="shipment2BatchBusinessSelect" class="edit-select"></select>
+				</div>
+			</div>
+			<div id="shipment2BatchStep3" class="wizard-step">
+				<p class="wizard-title">Этап 3/5</p>
+				<div class="edit-field">
+					<label class="edit-label" for="shipment2BatchWarehouseCount">Кол-во складов</label>
+					<input id="shipment2BatchWarehouseCount" class="edit-select" type="number" min="0" step="1" inputmode="numeric" pattern="[0-9]*" autocomplete="off" />
+				</div>
+			</div>
+			<div id="shipment2BatchStep4" class="wizard-step">
+				<p class="wizard-title">Этап 4/5</p>
+				<div id="shipment2BatchWarehousePickers" class="batch-warehouse-grid"></div>
+			</div>
+			<div id="shipment2BatchStep5" class="wizard-step batch-step5">
+				<p class="wizard-title">Этап 5/5</p>
+				<div class="batch-product-row">
+					<div class="edit-field" style="flex:1 1 250px;min-width:200px">
+						<label class="edit-label" for="shipment2BatchBarcodeInput">Товар (штрихкод)</label>
+						<input id="shipment2BatchBarcodeInput" class="edit-select" type="text" autocomplete="off" />
+					</div>
+					<div class="edit-field" style="flex:0 0 auto">
+						<label class="edit-label" for="shipment2BatchCameraBtn">Камера</label>
+						<button id="shipment2BatchCameraBtn" class="batch-icon-btn" type="button" onclick="openShipment2CameraModal()" aria-label="Сканировать камерой" title="Сканировать камерой"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></svg></button>
+					</div>
+					<div class="edit-field" style="flex:0 0 150px;min-width:130px">
+						<label class="edit-label" for="shipment2BatchBarcodeQty">Кол-во</label>
+						<input id="shipment2BatchBarcodeQty" class="edit-select" type="number" min="1" step="1" value="1" inputmode="numeric" pattern="[0-9]*" autocomplete="off" />
+					</div>
+					<div class="edit-field" style="flex:0 0 160px;min-width:140px">
+						<label class="edit-label" for="shipment2BatchBoxNoInput">Номер короба</label>
+						<input id="shipment2BatchBoxNoInput" class="edit-select" type="number" min="1" step="1" value="1" inputmode="numeric" pattern="[0-9]*" autocomplete="off" />
+					</div>
+				</div>
+				<div class="edit-field">
+					<label class="edit-label">Склады</label>
+					<div id="shipment2BatchWarehousesGrid" class="batch-warehouses-grid"></div>
+				</div>
+				<div class="edit-field">
+					<label class="edit-label">Коробы</label>
+					<div id="shipment2BatchBoxesGrid" class="batch-boxes-grid"></div>
+				</div>
+				<div id="shipment2BatchProductError" class="batch-modal-error"></div>
+				<div id="shipment2BatchProductsList" class="batch-products-list"></div>
+			</div>
+		</div>
+		<div class="batch-modal-footer">
+			<div id="shipment2BatchModalError" class="batch-modal-error"></div>
+			<div class="batch-footer-actions">
+				<div>
+					<button id="shipment2BatchCreateWarehouseBtn" class="api-btn" type="button" onclick="createShipment2WarehouseFromBatchStep()">Создать склад</button>
+				</div>
+				<div class="edit-actions" style="margin-top:0">
+					<button id="shipment2BatchBackBtn" class="api-btn" type="button" onclick="goBackShipment2BatchStep()">Назад</button>
+					<button id="shipment2BatchPrimaryBtn" class="api-btn" type="button" onclick="submitShipment2BatchCreate()">Далее</button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+<div id="shipment2CameraModal" class="modal" onclick="closeShipment2CameraModalOnOutsideClick(event)">
+	<div class="modal-content camera-modal-content" onclick="event.stopPropagation()">
+		<div class="modal-header">
+			<h2>Сканирование штрихкода</h2>
+			<button class="close-btn" type="button" onclick="closeShipment2CameraModal()">&times;</button>
+		</div>
+		<div class="camera-video-wrap">
+			<video id="shipment2CameraVideo" autoplay playsinline muted></video>
+		</div>
+		<div class="camera-hint">Наведите камеру на штрихкод — значение автоматически вставится в поле «Товар (штрихкод)».</div>
+		<div id="shipment2CameraError" class="batch-modal-error" style="margin-top:10px"></div>
+		<div class="edit-actions">
+			<button class="api-btn" type="button" onclick="closeShipment2CameraModal()">Закрыть</button>
+		</div>
+	</div>
+</div>
 <div id="shipment2EditModal" class="modal" onclick="closeShipment2EditModalOnOutsideClick(event)">
 	<div class="modal-content" style="max-width:620px" onclick="event.stopPropagation()">
 		<div class="modal-header">
-			<h2>Редактировать поставку</h2>
+			<h2>Детали поставки</h2>
 			<button class="close-btn" type="button" onclick="closeShipment2EditModal()">&times;</button>
 		</div>
 		<div class="edit-form-grid">
@@ -364,7 +555,7 @@ ${renderProfileScript()}
 			</div>
 			<div class="edit-field">
 				<label class="edit-label" for="shipment2EditSource">Источник</label>
-				<select id="shipment2EditSource" class="edit-select"></select>
+				<div id="shipment2EditSource" class="edit-static">—</div>
 			</div>
 			<div class="edit-field">
 				<label class="edit-label" for="shipment2EditBatch">Партия</label>
@@ -392,8 +583,7 @@ ${renderProfileScript()}
 			</div>
 		</div>
 		<div class="edit-actions">
-			<button class="api-btn" type="button" onclick="closeShipment2EditModal()">Отмена</button>
-			<button class="api-btn" type="button" onclick="saveShipment2Edit()">Сохранить</button>
+			<button class="api-btn" type="button" onclick="closeShipment2EditModal()">Закрыть</button>
 		</div>
 	</div>
 </div>
@@ -437,6 +627,35 @@ var shipments2Sources = [];
 var shipment2EditingId = null;
 var shipment2EditingWarehouses = [];
 var shipment2ShowEnglish = true;
+var shipment2BatchBusinesses = [];
+var shipment2BatchSources = [];
+var shipment2ManageWarehouses = [];
+var shipment2ManageSources = [];
+var shipment2BatchWizardStep = 1;
+var shipment2CreatedBatch = null;
+var shipment2AvailableWarehouses = [];
+var shipment2BatchWarehouseLinks = [];
+var shipment2BatchSelectedWarehouseLinkId = null;
+var shipment2BatchBoxes = [];
+var shipment2BatchSelectedBoxId = null;
+var shipment2BatchAddedProducts = [];
+var shipment2BatchCameraStream = null;
+var shipment2BatchCameraTimer = null;
+var shipment2BarcodeDetector = null;
+var shipment2BatchCameraBusy = false;
+var shipment2BatchRequestedWarehouseCount = 0;
+var shipment2BatchDraft = {
+	source_id: null,
+	source_name: '',
+	business_id: null,
+	business_name: '',
+	batch_label: '',
+	warehouse_count: 0,
+	warehouse_ids: [],
+	saved_batch_id: null,
+	saved_public_id: '',
+	saved_shipment_ids: []
+};
 
 function getShipmentDisplayName(item){
 	if (item && item.public_id) return item.public_id;
@@ -556,63 +775,999 @@ function setElementText(id, value){
 	el.textContent = formatDashValue(value);
 }
 
-async function createShipment2Warehouse(){
-	var rawName = prompt('Название склада');
-	if (rawName === null) return;
-	var name = String(rawName || '').trim();
+function setShipment2WarehouseModalError(message){
+	var errorEl = document.getElementById('shipment2WarehouseModalError');
+	if (!errorEl) return;
+	errorEl.textContent = message ? String(message) : '';
+}
+
+function setShipment2SourceModalError(message){
+	var errorEl = document.getElementById('shipment2SourceModalError');
+	if (!errorEl) return;
+	errorEl.textContent = message ? String(message) : '';
+}
+
+function renderShipment2WarehouseList(){
+	var bodyEl = document.getElementById('shipment2WarehouseListBody');
+	if (!bodyEl) return;
+	if (!Array.isArray(shipment2ManageWarehouses) || !shipment2ManageWarehouses.length) {
+		bodyEl.innerHTML = '<tr><td colspan="2" class="cash-muted" style="text-align:center;padding:12px">Складов нет</td></tr>';
+		return;
+	}
+	bodyEl.innerHTML = shipment2ManageWarehouses.map(function(item){
+		var label = item && item.name ? formatWarehouseDisplayName(item.name) : ('ID ' + item.id);
+		return '<tr><td>' + escapeHtml(label) + '</td><td class="manage-actions-cell"><button class="row-action-btn" type="button" title="Удалить" onclick="deleteShipment2Warehouse(' + Number(item.id) + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button></td></tr>';
+	}).join('');
+}
+
+function renderShipment2SourceList(){
+	var bodyEl = document.getElementById('shipment2SourceListBody');
+	if (!bodyEl) return;
+	if (!Array.isArray(shipment2ManageSources) || !shipment2ManageSources.length) {
+		bodyEl.innerHTML = '<tr><td colspan="2" class="cash-muted" style="text-align:center;padding:12px">Источников нет</td></tr>';
+		return;
+	}
+	bodyEl.innerHTML = shipment2ManageSources.map(function(item){
+		var label = item && item.name ? String(item.name) : ('ID ' + item.id);
+		return '<tr><td>' + escapeHtml(label) + '</td><td class="manage-actions-cell"><button class="row-action-btn" type="button" title="Удалить" onclick="deleteShipment2Source(' + Number(item.id) + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button></td></tr>';
+	}).join('');
+}
+
+async function refreshShipment2WarehouseList(){
+	var result = await apiGet('/api/fbo/warehouses');
+	shipment2ManageWarehouses = (result && result.success && Array.isArray(result.items)) ? result.items : [];
+	renderShipment2WarehouseList();
+	if (document.getElementById('shipment2BatchModal') && document.getElementById('shipment2BatchModal').classList.contains('active')) {
+		shipment2AvailableWarehouses = shipment2ManageWarehouses.slice();
+		setShipment2BatchWarehouseCountHint();
+	}
+}
+
+async function refreshShipment2SourceList(){
+	var result = await apiGet('/api/fbo/sources');
+	shipment2ManageSources = (result && result.success && Array.isArray(result.items)) ? result.items : [];
+	renderShipment2SourceList();
+	if (document.getElementById('shipment2BatchModal') && document.getElementById('shipment2BatchModal').classList.contains('active')) {
+		shipment2BatchSources = shipment2ManageSources.slice();
+		fillShipment2BatchSourceSelect(shipment2BatchSources);
+	}
+}
+
+async function openShipment2WarehouseModal(){
+	setShipment2WarehouseModalError('');
+	var inputEl = document.getElementById('shipment2WarehouseNameInput');
+	if (inputEl) inputEl.value = '';
+	var modal = document.getElementById('shipment2WarehouseModal');
+	if (modal) modal.classList.add('active');
+	await refreshShipment2WarehouseList();
+	if (inputEl) inputEl.focus();
+}
+
+function closeShipment2WarehouseModal(){
+	var modal = document.getElementById('shipment2WarehouseModal');
+	if (modal) modal.classList.remove('active');
+	setShipment2WarehouseModalError('');
+}
+
+function closeShipment2WarehouseModalOnOutsideClick(event){
+	if (event && event.target && event.target.id === 'shipment2WarehouseModal') {
+		closeShipment2WarehouseModal();
+	}
+}
+
+async function submitShipment2WarehouseCreate(){
+	var inputEl = document.getElementById('shipment2WarehouseNameInput');
+	var createBtn = document.getElementById('shipment2WarehouseCreateBtn');
+	var name = String((inputEl && inputEl.value) ? inputEl.value : '').trim();
 	if (!name) {
-		alert('Название склада обязательно');
+		setShipment2WarehouseModalError('Название склада обязательно');
 		return;
 	}
-	var result = await apiPost('/api/fbo/warehouses', { name: name });
+	setShipment2WarehouseModalError('');
+	if (createBtn) createBtn.disabled = true;
+	try {
+		var result = await apiPost('/api/fbo/warehouses', { name: name });
+		if (!result || !result.success) {
+			setShipment2WarehouseModalError((result && result.error) || 'Ошибка создания склада');
+			return;
+		}
+		if (inputEl) inputEl.value = '';
+		await refreshShipment2WarehouseList();
+		await loadShipments2();
+	} finally {
+		if (createBtn) createBtn.disabled = false;
+	}
+}
+
+async function deleteShipment2Warehouse(id){
+	if (!confirm('Удалить склад?')) return;
+	var result = await apiDelete('/api/fbo/warehouses/' + Number(id));
 	if (!result || !result.success) {
-		alert((result && result.error) || 'Ошибка создания склада');
+		setShipment2WarehouseModalError((result && result.error) || 'Ошибка удаления склада');
 		return;
 	}
-	alert('Склад создан');
+	setShipment2WarehouseModalError('');
+	await refreshShipment2WarehouseList();
 	await loadShipments2();
 }
 
-async function createShipment2Batch(){
-	var businessesRes = await apiGet('/api/fbo/businesses');
-	var businesses = (businessesRes && businessesRes.success && Array.isArray(businessesRes.items)) ? businessesRes.items : [];
-	if (!businesses.length) {
-		alert('Нет активных магазинов для создания партии');
+async function openShipment2SourceModal(){
+	setShipment2SourceModalError('');
+	var inputEl = document.getElementById('shipment2SourceNameInput');
+	if (inputEl) inputEl.value = '';
+	var modal = document.getElementById('shipment2SourceModal');
+	if (modal) modal.classList.add('active');
+	await refreshShipment2SourceList();
+	if (inputEl) inputEl.focus();
+}
+
+function closeShipment2SourceModal(){
+	var modal = document.getElementById('shipment2SourceModal');
+	if (modal) modal.classList.remove('active');
+	setShipment2SourceModalError('');
+}
+
+function closeShipment2SourceModalOnOutsideClick(event){
+	if (event && event.target && event.target.id === 'shipment2SourceModal') {
+		closeShipment2SourceModal();
+	}
+}
+
+async function submitShipment2SourceCreate(){
+	var inputEl = document.getElementById('shipment2SourceNameInput');
+	var createBtn = document.getElementById('shipment2SourceCreateBtn');
+	var name = String((inputEl && inputEl.value) ? inputEl.value : '').trim();
+	if (!name) {
+		setShipment2SourceModalError('Название источника обязательно');
 		return;
 	}
-
-	var businessId = 0;
-	if (businesses.length === 1) {
-		businessId = Number(businesses[0].id);
-	} else {
-		var optionsText = businesses.map(function(item, index){
-			var label = item && item.company_name ? String(item.company_name) : ('ID ' + item.id);
-			return String(index + 1) + '. ' + label;
-		}).join('\\n');
-		var rawChoice = prompt('Выберите магазин для партии (номер):\\n' + optionsText, '1');
-		if (rawChoice === null) return;
-		var choice = parseInt(String(rawChoice || '').trim(), 10);
-		if (!Number.isFinite(choice) || choice < 1 || choice > businesses.length) {
-			alert('Некорректный номер магазина');
+	setShipment2SourceModalError('');
+	if (createBtn) createBtn.disabled = true;
+	try {
+		var result = await apiPost('/api/fbo/sources', { name: name });
+		if (!result || !result.success) {
+			setShipment2SourceModalError((result && result.error) || 'Ошибка создания источника');
 			return;
 		}
-		businessId = Number(businesses[choice - 1].id);
+		if (inputEl) inputEl.value = '';
+		await refreshShipment2SourceList();
+		await loadShipments2();
+	} finally {
+		if (createBtn) createBtn.disabled = false;
 	}
+}
 
-	if (!businessId) {
-		alert('Не удалось определить магазин');
-		return;
-	}
-
-	var result = await apiPost('/api/fbo/batches', { business_id: businessId });
+async function deleteShipment2Source(id){
+	if (!confirm('Удалить источник?')) return;
+	var result = await apiDelete('/api/fbo/sources/' + Number(id));
 	if (!result || !result.success) {
-		alert((result && result.error) || 'Ошибка создания партии');
+		setShipment2SourceModalError((result && result.error) || 'Ошибка удаления источника');
+		return;
+	}
+	setShipment2SourceModalError('');
+	await refreshShipment2SourceList();
+	await loadShipments2();
+}
+
+async function createShipment2Warehouse(){
+	return openShipment2WarehouseModal();
+}
+
+async function createShipment2Source(){
+	return openShipment2SourceModal();
+}
+
+async function createShipment2Batch(){
+	return openShipment2BatchModal();
+}
+
+function setShipment2BatchModalError(message){
+	var errorEl = document.getElementById('shipment2BatchModalError');
+	if (!errorEl) return;
+	errorEl.textContent = message ? String(message) : '';
+}
+
+function fillShipment2BatchBusinessSelect(items){
+	var selectEl = document.getElementById('shipment2BatchBusinessSelect');
+	if (!selectEl) return;
+	if (!Array.isArray(items) || !items.length) {
+		selectEl.innerHTML = '<option value="">Нет активных магазинов</option>';
+		selectEl.disabled = true;
+		return;
+	}
+	var placeholderOption = '<option value="">Выберите магазин</option>';
+	selectEl.innerHTML = placeholderOption + items.map(function(item){
+		var label = item && item.company_name ? String(item.company_name) : ('ID ' + item.id);
+		return '<option value="' + item.id + '">' + escapeHtml(label) + '</option>';
+	}).join('');
+	selectEl.disabled = false;
+	selectEl.value = '';
+}
+
+function fillShipment2BatchSourceSelect(items){
+	var selectEl = document.getElementById('shipment2BatchSourceSelect');
+	if (!selectEl) return;
+	if (!Array.isArray(items) || !items.length) {
+		selectEl.innerHTML = '<option value="">Нет активных источников</option>';
+		selectEl.disabled = true;
+		return;
+	}
+	var placeholderOption = '<option value="">Выберите источник</option>';
+	selectEl.innerHTML = placeholderOption + items.map(function(item){
+		var label = item && item.name ? String(item.name) : ('ID ' + item.id);
+		return '<option value="' + item.id + '">' + escapeHtml(label) + '</option>';
+	}).join('');
+	selectEl.disabled = false;
+	selectEl.value = '';
+}
+
+function setShipment2BatchWarehouseCountHint(){
+	var hintEl = document.getElementById('shipment2BatchWarehouseCountHint');
+	if (!hintEl) return;
+	var maxCount = Array.isArray(shipment2AvailableWarehouses) ? shipment2AvailableWarehouses.length : 0;
+	if (!maxCount) {
+		hintEl.textContent = 'Доступно складов: 0.';
+		return;
+	}
+	hintEl.textContent = 'Доступно складов: ' + maxCount + '.';
+}
+
+function setShipment2BatchProductError(message){
+	var errorEl = document.getElementById('shipment2BatchProductError');
+	if (!errorEl) return;
+	errorEl.textContent = message ? String(message) : '';
+}
+
+function renderShipment2BatchProductsList(){
+	var root = document.getElementById('shipment2BatchProductsList');
+	if (!root) return;
+	if (!Array.isArray(shipment2BatchAddedProducts) || !shipment2BatchAddedProducts.length) {
+		root.innerHTML = '';
+		return;
+	}
+	root.innerHTML = shipment2BatchAddedProducts.map(function(item){
+		var barcode = item && item.barcode ? String(item.barcode) : '—';
+		var qty = Number(item && item.qty ? item.qty : 0);
+		var boxNo = Number(item && item.box_no ? item.box_no : 0);
+		var warehouseName = item && item.warehouse_name ? String(item.warehouse_name) : '';
+		var right = 'Короб №' + escapeHtml(String(boxNo || '—')) + ' · ' + escapeHtml(String(qty || 0)) + ' шт.';
+		if (warehouseName) right += ' · ' + escapeHtml(warehouseName);
+		return '<div class="batch-products-row"><span>' + escapeHtml(barcode) + '</span><span>' + right + '</span></div>';
+	}).join('');
+}
+
+function renderShipment2BatchWarehouses(){
+	var root = document.getElementById('shipment2BatchWarehousesGrid');
+	if (!root) return;
+	if (!Array.isArray(shipment2BatchWarehouseLinks) || !shipment2BatchWarehouseLinks.length) {
+		root.innerHTML = '<div class="cash-muted">Склады не найдены</div>';
+		return;
+	}
+	root.innerHTML = shipment2BatchWarehouseLinks.map(function(item){
+		var isActive = Number(shipment2BatchSelectedWarehouseLinkId) === Number(item.id);
+		var label = item && item.warehouse_name ? formatWarehouseDisplayName(item.warehouse_name) : ('ID ' + item.warehouse_id);
+		return '<button type="button" class="batch-warehouse-btn' + (isActive ? ' active' : '') + '" onclick="selectShipment2BatchWarehouse(' + Number(item.id) + ')">' + escapeHtml(String(label || '—').toUpperCase()) + '</button>';
+	}).join('');
+}
+
+function renderShipment2BatchBoxes(){
+	var root = document.getElementById('shipment2BatchBoxesGrid');
+	if (!root) return;
+	if (!shipment2BatchSelectedWarehouseLinkId) {
+		root.innerHTML = '<div class="cash-muted">Сначала выберите склад</div>';
+		return;
+	}
+	var filteredBoxes = (shipment2BatchBoxes || []).filter(function(item){ return Number(item.shipment_warehouse_id) === Number(shipment2BatchSelectedWarehouseLinkId); });
+	if (!filteredBoxes.length) {
+		root.innerHTML = '';
+		return;
+	}
+	root.innerHTML = filteredBoxes.map(function(item){
+		var isActive = Number(shipment2BatchSelectedBoxId) === Number(item.id);
+		var boxNo = Number(item && item.box_no ? item.box_no : 0);
+		return '<button type="button" class="batch-box-btn' + (isActive ? ' active' : '') + '" onclick="selectShipment2BatchBox(' + Number(item.id) + ')"><span class="batch-box-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/></svg></span><span>' + escapeHtml('Короб №' + (boxNo || item.id)) + '</span></button>';
+	}).join('');
+}
+
+function selectShipment2BatchWarehouse(shipmentWarehouseId){
+	shipment2BatchSelectedWarehouseLinkId = Number(shipmentWarehouseId) || null;
+	var firstBoxForWarehouse = (shipment2BatchBoxes || []).find(function(item){ return Number(item.shipment_warehouse_id) === Number(shipment2BatchSelectedWarehouseLinkId); });
+	shipment2BatchSelectedBoxId = firstBoxForWarehouse ? Number(firstBoxForWarehouse.id) : null;
+	var boxNoInput = document.getElementById('shipment2BatchBoxNoInput');
+	if (boxNoInput) {
+		boxNoInput.value = firstBoxForWarehouse && Number(firstBoxForWarehouse.box_no) > 0 ? String(firstBoxForWarehouse.box_no) : '1';
+	}
+	renderShipment2BatchWarehouses();
+	renderShipment2BatchBoxes();
+}
+
+function selectShipment2BatchBox(boxId){
+	shipment2BatchSelectedBoxId = Number(boxId) || null;
+	var selectedBox = (shipment2BatchBoxes || []).find(function(item){ return Number(item.id) === Number(shipment2BatchSelectedBoxId); });
+	if (selectedBox && selectedBox.shipment_warehouse_id) {
+		shipment2BatchSelectedWarehouseLinkId = Number(selectedBox.shipment_warehouse_id);
+	}
+	var boxNoInput = document.getElementById('shipment2BatchBoxNoInput');
+	if (boxNoInput && selectedBox && Number(selectedBox.box_no) > 0) {
+		boxNoInput.value = String(selectedBox.box_no);
+	}
+	renderShipment2BatchWarehouses();
+	renderShipment2BatchBoxes();
+}
+
+async function ensureShipment2BatchBoxesReady(){
+	shipment2BatchWarehouseLinks = [];
+	shipment2BatchBoxes = [];
+	var shipmentIds = Array.isArray(shipment2BatchDraft.saved_shipment_ids) ? shipment2BatchDraft.saved_shipment_ids.slice() : [];
+	for (var i = 0; i < shipmentIds.length; i += 1) {
+		var shipmentId = Number(shipmentIds[i]);
+		if (!shipmentId) continue;
+		var linkRes = await apiGet('/api/fbo/shipments/' + shipmentId + '/warehouses');
+		var linkItems = (linkRes && linkRes.success && Array.isArray(linkRes.items)) ? linkRes.items : [];
+		for (var j = 0; j < linkItems.length; j += 1) {
+			var link = linkItems[j];
+			if (!link || !link.id) continue;
+			shipment2BatchWarehouseLinks.push({
+				id: Number(link.id),
+				shipment_id: shipmentId,
+				warehouse_id: Number(link.warehouse_id || 0),
+				warehouse_name: link.warehouse_name ? String(link.warehouse_name) : ''
+			});
+			var boxesRes = await apiGet('/api/fbo/boxes?shipmentWarehouseId=' + Number(link.id));
+			var boxItems = (boxesRes && boxesRes.success && Array.isArray(boxesRes.items)) ? boxesRes.items : [];
+			if (!boxItems.length) {
+				var createBoxRes = await apiPost('/api/fbo/boxes', { shipment_warehouse_id: Number(link.id) });
+				if (!createBoxRes || !createBoxRes.success) {
+					throw new Error((createBoxRes && createBoxRes.error) || 'Не удалось создать короб');
+				}
+				boxesRes = await apiGet('/api/fbo/boxes?shipmentWarehouseId=' + Number(link.id));
+				boxItems = (boxesRes && boxesRes.success && Array.isArray(boxesRes.items)) ? boxesRes.items : [];
+			}
+			for (var k = 0; k < boxItems.length; k += 1) {
+				var box = boxItems[k];
+				shipment2BatchBoxes.push({
+					id: Number(box.id),
+					box_no: Number(box.box_no || 0),
+					shipment_id: shipmentId,
+					shipment_warehouse_id: Number(link.id)
+				});
+			}
+		}
+	}
+	shipment2BatchBoxes.sort(function(a, b){
+		if (Number(a.box_no) === Number(b.box_no)) return Number(a.id) - Number(b.id);
+		return Number(a.box_no) - Number(b.box_no);
+	});
+	shipment2BatchWarehouseLinks.sort(function(a, b){
+		var aa = String(a.warehouse_name || '').toUpperCase();
+		var bb = String(b.warehouse_name || '').toUpperCase();
+		if (aa === bb) return Number(a.id) - Number(b.id);
+		return aa < bb ? -1 : 1;
+	});
+	if (shipment2BatchWarehouseLinks.length) {
+		var hasSelectedWarehouse = shipment2BatchWarehouseLinks.some(function(item){ return Number(item.id) === Number(shipment2BatchSelectedWarehouseLinkId); });
+		if (!hasSelectedWarehouse) shipment2BatchSelectedWarehouseLinkId = Number(shipment2BatchWarehouseLinks[0].id);
+	} else {
+		shipment2BatchSelectedWarehouseLinkId = null;
+	}
+	if (!shipment2BatchBoxes.length) {
+		shipment2BatchSelectedBoxId = null;
+		return;
+	}
+	var filteredForSelectedWarehouse = (shipment2BatchBoxes || []).filter(function(item){ return Number(item.shipment_warehouse_id) === Number(shipment2BatchSelectedWarehouseLinkId); });
+	if (filteredForSelectedWarehouse.length) {
+		var hasCurrentInWarehouse = filteredForSelectedWarehouse.some(function(item){ return Number(item.id) === Number(shipment2BatchSelectedBoxId); });
+		if (!hasCurrentInWarehouse) shipment2BatchSelectedBoxId = Number(filteredForSelectedWarehouse[0].id);
+		var boxNoInputEl = document.getElementById('shipment2BatchBoxNoInput');
+		if (boxNoInputEl) {
+			var selectedBox = filteredForSelectedWarehouse.find(function(item){ return Number(item.id) === Number(shipment2BatchSelectedBoxId); });
+			if (selectedBox && Number(selectedBox.box_no) > 0) boxNoInputEl.value = String(selectedBox.box_no);
+		}
+		return;
+	}
+	shipment2BatchSelectedBoxId = null;
+}
+
+async function ensureShipment2BatchBoxByNumber(shipmentWarehouseId, boxNo){
+	var swId = Number(shipmentWarehouseId);
+	var desiredNo = Number(boxNo);
+	if (!swId || !desiredNo || desiredNo < 1) {
+		throw new Error('Некорректный номер короба');
+	}
+
+	var existingForWarehouse = (shipment2BatchBoxes || []).filter(function(item){ return Number(item.shipment_warehouse_id) === swId; });
+	var existing = existingForWarehouse.find(function(item){ return Number(item.box_no) === desiredNo; });
+	if (existing) return existing;
+
+	var maxNo = existingForWarehouse.reduce(function(maxValue, item){
+		var currentNo = Number(item && item.box_no ? item.box_no : 0);
+		return currentNo > maxValue ? currentNo : maxValue;
+	}, 0);
+
+	if (desiredNo <= maxNo) {
+		throw new Error('Короб №' + desiredNo + ' отсутствует у выбранного склада');
+	}
+
+	var createCount = desiredNo - maxNo;
+	for (var i = 0; i < createCount; i += 1) {
+		var createRes = await apiPost('/api/fbo/boxes', { shipment_warehouse_id: swId });
+		if (!createRes || !createRes.success) {
+			throw new Error((createRes && createRes.error) || 'Ошибка создания короба');
+		}
+	}
+
+	await ensureShipment2BatchBoxesReady();
+	renderShipment2BatchWarehouses();
+	renderShipment2BatchBoxes();
+
+	var created = (shipment2BatchBoxes || []).find(function(item){
+		return Number(item.shipment_warehouse_id) === swId && Number(item.box_no) === desiredNo;
+	});
+	if (!created) {
+		throw new Error('Не удалось найти созданный короб №' + desiredNo);
+	}
+	return created;
+}
+
+function setShipment2CameraError(message){
+	var errorEl = document.getElementById('shipment2CameraError');
+	if (!errorEl) return;
+	errorEl.textContent = message ? String(message) : '';
+}
+
+function stopShipment2CameraStream(){
+	if (shipment2BatchCameraTimer) {
+		cancelAnimationFrame(shipment2BatchCameraTimer);
+		shipment2BatchCameraTimer = null;
+	}
+	if (shipment2BatchCameraStream) {
+		shipment2BatchCameraStream.getTracks().forEach(function(track){ track.stop(); });
+		shipment2BatchCameraStream = null;
+	}
+	var videoEl = document.getElementById('shipment2CameraVideo');
+	if (videoEl) videoEl.srcObject = null;
+}
+
+function closeShipment2CameraModal(){
+	stopShipment2CameraStream();
+	setShipment2CameraError('');
+	var modal = document.getElementById('shipment2CameraModal');
+	if (modal) modal.classList.remove('active');
+}
+
+function closeShipment2CameraModalOnOutsideClick(event){
+	if (event && event.target && event.target.id === 'shipment2CameraModal') {
+		closeShipment2CameraModal();
+	}
+}
+
+async function detectShipment2BarcodeFromVideo(videoEl){
+	if (!videoEl || typeof BarcodeDetector === 'undefined') return null;
+	if (!shipment2BarcodeDetector) {
+		var preferredFormats = ['ean_13', 'ean_8', 'code_128', 'upc_a', 'upc_e', 'itf', 'code_39', 'codabar'];
+		if (BarcodeDetector.getSupportedFormats) {
+			try {
+				var supported = await BarcodeDetector.getSupportedFormats();
+				var usingFormats = preferredFormats.filter(function(format){ return Array.isArray(supported) && supported.indexOf(format) !== -1; });
+				shipment2BarcodeDetector = usingFormats.length ? new BarcodeDetector({ formats: usingFormats }) : new BarcodeDetector();
+			} catch (supportError) {
+				shipment2BarcodeDetector = new BarcodeDetector({ formats: preferredFormats });
+			}
+		} else {
+			shipment2BarcodeDetector = new BarcodeDetector({ formats: preferredFormats });
+		}
+	}
+	var barcodes = [];
+	try {
+		barcodes = await shipment2BarcodeDetector.detect(videoEl);
+	} catch (firstError) {
+		try {
+			if (!videoEl.videoWidth || !videoEl.videoHeight) return null;
+			var canvas = document.createElement('canvas');
+			canvas.width = videoEl.videoWidth;
+			canvas.height = videoEl.videoHeight;
+			var ctx = canvas.getContext('2d', { willReadFrequently: true });
+			if (!ctx) return null;
+			ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+			barcodes = await shipment2BarcodeDetector.detect(canvas);
+		} catch (secondError) {
+			barcodes = [];
+		}
+	}
+	if (!Array.isArray(barcodes) || !barcodes.length) return null;
+	var code = barcodes[0] && barcodes[0].rawValue ? String(barcodes[0].rawValue).trim() : '';
+	return code || null;
+}
+
+function runShipment2CameraScanLoop(videoEl){
+	if (!videoEl || !shipment2BatchCameraStream) return;
+	shipment2BatchCameraTimer = requestAnimationFrame(async function(){
+		if (!shipment2BatchCameraStream) return;
+		if (videoEl.readyState >= 2 && !shipment2BatchCameraBusy) {
+			shipment2BatchCameraBusy = true;
+			try {
+				var scannedValue = await detectShipment2BarcodeFromVideo(videoEl);
+				if (scannedValue) {
+					var barcodeInput = document.getElementById('shipment2BatchBarcodeInput');
+					if (barcodeInput) {
+						barcodeInput.value = scannedValue;
+						barcodeInput.focus();
+					}
+					closeShipment2CameraModal();
+					shipment2BatchCameraBusy = false;
+					return;
+				}
+			} catch (scanError) {
+				setShipment2CameraError((scanError && scanError.message) ? scanError.message : 'Ошибка сканирования');
+			}
+			shipment2BatchCameraBusy = false;
+		}
+		runShipment2CameraScanLoop(videoEl);
+	});
+}
+
+async function openShipment2CameraModal(){
+	setShipment2CameraError('');
+	shipment2BatchCameraBusy = false;
+	if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+		setShipment2CameraError('Камера недоступна в этом браузере');
+		return;
+	}
+	var modal = document.getElementById('shipment2CameraModal');
+	var videoEl = document.getElementById('shipment2CameraVideo');
+	if (!modal || !videoEl) return;
+
+	try {
+		shipment2BatchCameraStream = await navigator.mediaDevices.getUserMedia({
+			video: {
+				facingMode: { ideal: 'environment' },
+				width: { ideal: 1920 },
+				height: { ideal: 1080 }
+			},
+			audio: false
+		});
+		videoEl.srcObject = shipment2BatchCameraStream;
+		try {
+			await videoEl.play();
+		} catch (playError) {
+		}
+		modal.classList.add('active');
+		if (typeof BarcodeDetector === 'undefined') {
+			setShipment2CameraError('Авто-скан в этом браузере не поддерживается. На телефоне (Chrome/Android) обычно работает стабильнее.');
+			return;
+		}
+		if (shipment2BatchCameraTimer) cancelAnimationFrame(shipment2BatchCameraTimer);
+		runShipment2CameraScanLoop(videoEl);
+	} catch (cameraError) {
+		setShipment2CameraError((cameraError && cameraError.message) ? cameraError.message : 'Не удалось включить камеру');
+	}
+}
+
+function renderShipment2BatchWizard(){
+	var step1 = document.getElementById('shipment2BatchStep1');
+	var step2 = document.getElementById('shipment2BatchStep2');
+	var step3 = document.getElementById('shipment2BatchStep3');
+	var step4 = document.getElementById('shipment2BatchStep4');
+	var step5 = document.getElementById('shipment2BatchStep5');
+	var primaryBtn = document.getElementById('shipment2BatchPrimaryBtn');
+	var backBtn = document.getElementById('shipment2BatchBackBtn');
+	var createWhBtn = document.getElementById('shipment2BatchCreateWarehouseBtn');
+	if (step1) step1.classList.toggle('active', shipment2BatchWizardStep === 1);
+	if (step2) step2.classList.toggle('active', shipment2BatchWizardStep === 2);
+	if (step3) step3.classList.toggle('active', shipment2BatchWizardStep === 3);
+	if (step4) step4.classList.toggle('active', shipment2BatchWizardStep === 4);
+	if (step5) step5.classList.toggle('active', shipment2BatchWizardStep === 5);
+	if (backBtn) backBtn.style.visibility = shipment2BatchWizardStep === 1 ? 'hidden' : 'visible';
+	if (createWhBtn) createWhBtn.style.visibility = shipment2BatchWizardStep === 3 ? 'visible' : 'hidden';
+	if (primaryBtn) {
+		if (shipment2BatchWizardStep === 1) primaryBtn.textContent = 'Далее';
+		else if (shipment2BatchWizardStep === 2) primaryBtn.textContent = 'Далее';
+		else if (shipment2BatchWizardStep === 3) primaryBtn.textContent = 'Далее';
+		else if (shipment2BatchWizardStep === 4) primaryBtn.textContent = 'Сохранить';
+		else if (shipment2BatchWizardStep === 5) primaryBtn.textContent = 'Добавить товар';
+		else primaryBtn.textContent = 'Далее';
+	}
+}
+
+function setShipment2BatchCreatedInfo(){
+	var infoEl = document.getElementById('shipment2BatchCreatedInfo');
+	if (!infoEl) return;
+	if (!shipment2CreatedBatch) {
+		infoEl.textContent = '';
+		return;
+	}
+	var label = shipment2CreatedBatch.public_id ? String(shipment2CreatedBatch.public_id) : (shipment2BatchDraft.batch_label || 'Черновик партии');
+	infoEl.textContent = 'Черновик партии: ' + label;
+}
+
+function resetShipment2BatchWizardState(){
+	shipment2BatchWizardStep = 1;
+	shipment2CreatedBatch = null;
+	shipment2BatchSources = [];
+	shipment2AvailableWarehouses = [];
+	shipment2BatchWarehouseLinks = [];
+	shipment2BatchSelectedWarehouseLinkId = null;
+	shipment2BatchBoxes = [];
+	shipment2BatchSelectedBoxId = null;
+	shipment2BatchAddedProducts = [];
+	stopShipment2CameraStream();
+	shipment2BatchRequestedWarehouseCount = 0;
+	shipment2BatchDraft = {
+		source_id: null,
+		source_name: '',
+		business_id: null,
+		business_name: '',
+		batch_label: '',
+		warehouse_count: 0,
+		warehouse_ids: [],
+		saved_batch_id: null,
+		saved_public_id: '',
+		saved_shipment_ids: []
+	};
+	setShipment2BatchSavedInfo('');
+	setShipment2BatchCreatedInfo();
+	setShipment2BatchProductError('');
+	renderShipment2BatchBoxes();
+	renderShipment2BatchProductsList();
+	renderShipment2BatchWizard();
+}
+
+function setShipment2BatchSavedInfo(message){
+	var infoEl = document.getElementById('shipment2BatchSavedInfo');
+	if (!infoEl) return;
+	infoEl.textContent = message ? String(message) : '';
+}
+
+function renderShipment2BatchWarehousePickers(count){
+	var root = document.getElementById('shipment2BatchWarehousePickers');
+	if (!root) return;
+	if (!Array.isArray(shipment2AvailableWarehouses) || !shipment2AvailableWarehouses.length) {
+		root.innerHTML = '<div class="edit-static" style="width:100%;grid-column:1/-1">Нет доступных складов</div>';
+		return;
+	}
+	var placeholderOption = '<option value="">Выберите склад</option>';
+	var options = shipment2AvailableWarehouses.map(function(item){
+		var name = item && item.name ? formatWarehouseDisplayName(item.name) : ('ID ' + item.id);
+		var upperName = String(name || '').toUpperCase();
+		return '<option value="' + item.id + '">' + escapeHtml(upperName) + '</option>';
+	}).join('');
+	var html = [];
+	for (var i = 0; i < count; i += 1) {
+		var selectedWarehouseId = Array.isArray(shipment2BatchDraft.warehouse_ids) ? shipment2BatchDraft.warehouse_ids[i] : null;
+		var selectedValue = selectedWarehouseId ? String(selectedWarehouseId) : '';
+		html.push('<div class="edit-field">'
+			+ '<label class="edit-label" for="shipment2BatchWarehousePick' + i + '">Склад ' + (i + 1) + '</label>'
+			+ '<select id="shipment2BatchWarehousePick' + i + '" class="edit-select shipment2-batch-wh-select">' + placeholderOption + options + '</select>'
+			+ '</div>');
+	}
+	root.innerHTML = html.join('');
+	for (var j = 0; j < count; j += 1) {
+		var selectEl = document.getElementById('shipment2BatchWarehousePick' + j);
+		if (!selectEl) continue;
+		var selectedId = Array.isArray(shipment2BatchDraft.warehouse_ids) ? shipment2BatchDraft.warehouse_ids[j] : null;
+		selectEl.value = selectedId ? String(selectedId) : '';
+	}
+}
+
+function getShipment2BatchSelectedWarehouseIds(count){
+	var selected = [];
+	for (var i = 0; i < count; i += 1) {
+		var selectEl = document.getElementById('shipment2BatchWarehousePick' + i);
+		var warehouseId = parseInt((selectEl && selectEl.value) ? selectEl.value : '0', 10);
+		if (!warehouseId) return null;
+		if (selected.indexOf(warehouseId) !== -1) return 'duplicate';
+		selected.push(warehouseId);
+	}
+	return selected;
+}
+
+function closeShipment2BatchModal(){
+	if (shouldConfirmCloseShipment2BatchModal()) {
+		var approved = confirm('Закрыть модалку? Несохранённые данные по созданию партии будут потеряны.');
+		if (!approved) return;
+	}
+	var modal = document.getElementById('shipment2BatchModal');
+	if (modal) modal.classList.remove('active');
+	closeShipment2CameraModal();
+	setShipment2BatchModalError('');
+	setShipment2BatchProductError('');
+	resetShipment2BatchWizardState();
+}
+
+function shouldConfirmCloseShipment2BatchModal(){
+	if (shipment2BatchWizardStep === 5 && shipment2BatchDraft && shipment2BatchDraft.saved_batch_id) return false;
+	if (shipment2BatchWizardStep > 1) return true;
+	if (shipment2BatchDraft && shipment2BatchDraft.source_id) return true;
+	if (shipment2BatchDraft && shipment2BatchDraft.business_id) return true;
+	if (shipment2BatchDraft && Number(shipment2BatchDraft.warehouse_count || 0) > 0) return true;
+	if (shipment2BatchDraft && Array.isArray(shipment2BatchDraft.warehouse_ids) && shipment2BatchDraft.warehouse_ids.length) return true;
+	return false;
+}
+
+async function createShipment2WarehouseFromBatchStep(){
+	if (shipment2BatchWizardStep !== 3) return;
+	setShipment2BatchModalError('');
+	await openShipment2WarehouseModal();
+}
+
+async function recreateShipment2DraftShipments(selectedWarehouseIds, sourceId){
+	var normalizedSourceId = Number(sourceId);
+	if (!normalizedSourceId) {
+		throw new Error('Выберите источник для создания поставок');
+	}
+	var existingIds = Array.isArray(shipment2BatchDraft.saved_shipment_ids) ? shipment2BatchDraft.saved_shipment_ids.slice() : [];
+	for (var i = 0; i < existingIds.length; i += 1) {
+		var deleteRes = await apiDelete('/api/fbo/shipments/' + existingIds[i]);
+		if (!deleteRes || !deleteRes.success) {
+			throw new Error((deleteRes && deleteRes.error) || 'Ошибка обновления набора поставок');
+		}
+	}
+
+	var createdShipmentIds = [];
+	for (var j = 0; j < selectedWarehouseIds.length; j += 1) {
+		var warehouseId = Number(selectedWarehouseIds[j]);
+		if (!warehouseId) {
+			continue;
+		}
+		var shipmentRes = await apiPost('/api/fbo/shipments', {
+			source_id: normalizedSourceId,
+			batch_id: shipment2BatchDraft.saved_batch_id
+		});
+		if (!shipmentRes || !shipmentRes.success || !shipmentRes.item || !shipmentRes.item.id) {
+			throw new Error((shipmentRes && shipmentRes.error) || 'Ошибка создания поставки');
+		}
+		var shipmentId = Number(shipmentRes.item.id);
+		var addRes = await apiPost('/api/fbo/shipments/' + shipmentId + '/warehouses', { warehouse_id: warehouseId });
+		if (!addRes || !addRes.success) {
+			throw new Error((addRes && addRes.error) || 'Ошибка привязки склада к поставке');
+		}
+		createdShipmentIds.push(shipmentId);
+	}
+	shipment2BatchDraft.saved_shipment_ids = createdShipmentIds;
+}
+
+function getWarehouseDisplayLabelById(warehouseId){
+	var item = (shipment2AvailableWarehouses || []).find(function(wh){ return Number(wh.id) === Number(warehouseId); });
+	if (!item) return 'ID ' + warehouseId;
+	var label = item.name ? formatWarehouseDisplayName(item.name) : ('ID ' + warehouseId);
+	return String(label || '').toUpperCase();
+}
+
+function closeShipment2BatchModalOnOutsideClick(event){
+	if (event && event.target && event.target.id === 'shipment2BatchModal') {
+		closeShipment2BatchModal();
+	}
+}
+
+async function openShipment2BatchModal(){
+	var createBtn = document.getElementById('shipment2BatchPrimaryBtn');
+	var sourceEl = document.getElementById('shipment2BatchSourceSelect');
+	var selectEl = document.getElementById('shipment2BatchBusinessSelect');
+	resetShipment2BatchWizardState();
+	if (sourceEl) {
+		sourceEl.innerHTML = '<option value="">Загрузка источников...</option>';
+		sourceEl.disabled = true;
+	}
+	if (selectEl) {
+		selectEl.innerHTML = '<option value="">Загрузка магазинов...</option>';
+		selectEl.disabled = true;
+	}
+	if (createBtn) createBtn.disabled = true;
+	setShipment2BatchModalError('');
+
+	var sourcesRes = await apiGet('/api/fbo/sources');
+	shipment2BatchSources = (sourcesRes && sourcesRes.success && Array.isArray(sourcesRes.items)) ? sourcesRes.items : [];
+	var businessesRes = await apiGet('/api/fbo/businesses');
+	shipment2BatchBusinesses = (businessesRes && businessesRes.success && Array.isArray(businessesRes.items)) ? businessesRes.items : [];
+
+	fillShipment2BatchSourceSelect(shipment2BatchSources);
+	fillShipment2BatchBusinessSelect(shipment2BatchBusinesses);
+	if (!shipment2BatchSources.length) {
+		setShipment2BatchModalError('Нет активных источников для создания партии');
+	}
+	if (!shipment2BatchBusinesses.length) {
+		setShipment2BatchModalError('Нет активных магазинов для создания партии');
+	}
+	if (createBtn) createBtn.disabled = !(shipment2BatchSources.length && shipment2BatchBusinesses.length);
+	var modal = document.getElementById('shipment2BatchModal');
+	if (modal) modal.classList.add('active');
+}
+
+function goBackShipment2BatchStep(){
+	setShipment2BatchModalError('');
+	if (shipment2BatchWizardStep <= 1) return;
+	if (shipment2BatchWizardStep === 5) {
+		shipment2BatchWizardStep = 4;
+		setShipment2BatchProductError('');
+		renderShipment2BatchWizard();
+		return;
+	}
+	if (shipment2BatchWizardStep === 4) {
+		shipment2BatchWizardStep = 3;
+		setShipment2BatchProductError('');
+		renderShipment2BatchWizard();
+		return;
+	}
+	shipment2BatchWizardStep -= 1;
+	renderShipment2BatchWizard();
+}
+
+async function submitShipment2BatchCreate(){
+	var primaryBtn = document.getElementById('shipment2BatchPrimaryBtn');
+	setShipment2BatchModalError('');
+
+	if (shipment2BatchWizardStep === 1) {
+		var sourceSelectEl = document.getElementById('shipment2BatchSourceSelect');
+		var sourceId = parseInt((sourceSelectEl && sourceSelectEl.value) ? sourceSelectEl.value : '0', 10);
+		if (!sourceId) {
+			setShipment2BatchModalError('Выберите источник из списка');
+			return;
+		}
+		var selectedSource = (shipment2BatchSources || []).find(function(item){ return Number(item.id) === Number(sourceId); });
+		var sourceName = selectedSource && selectedSource.name ? String(selectedSource.name) : ('ID ' + sourceId);
+		shipment2BatchDraft.source_id = sourceId;
+		shipment2BatchDraft.source_name = sourceName;
+		shipment2BatchWizardStep = 2;
+		renderShipment2BatchWizard();
 		return;
 	}
 
-	var batchLabel = (result.item && result.item.public_id) ? String(result.item.public_id) : 'Партия создана';
-	alert(batchLabel);
-	await loadShipments2();
+	if (shipment2BatchWizardStep === 2) {
+		var selectEl = document.getElementById('shipment2BatchBusinessSelect');
+		var businessId = parseInt((selectEl && selectEl.value) ? selectEl.value : '0', 10);
+		if (!businessId) {
+			setShipment2BatchModalError('Выберите магазин из списка');
+			return;
+		}
+		var selectedBusiness = (shipment2BatchBusinesses || []).find(function(item){ return Number(item.id) === Number(businessId); });
+		var businessName = selectedBusiness && selectedBusiness.company_name ? String(selectedBusiness.company_name) : ('ID ' + businessId);
+		shipment2BatchDraft.business_id = businessId;
+		shipment2BatchDraft.business_name = businessName;
+		shipment2BatchDraft.batch_label = businessName + ' - ЧЕРНОВИК';
+		shipment2CreatedBatch = { public_id: shipment2BatchDraft.batch_label };
+		setShipment2BatchCreatedInfo();
+
+		if (primaryBtn) primaryBtn.disabled = true;
+		var warehousesRes = await apiGet('/api/fbo/warehouses');
+		shipment2AvailableWarehouses = (warehousesRes && warehousesRes.success && Array.isArray(warehousesRes.items)) ? warehousesRes.items : [];
+		var countInput = document.getElementById('shipment2BatchWarehouseCount');
+		if (countInput) {
+			countInput.value = String(shipment2BatchDraft.warehouse_count || 0);
+			countInput.disabled = !shipment2AvailableWarehouses.length;
+		}
+		setShipment2BatchWarehouseCountHint();
+		if (!shipment2AvailableWarehouses.length) {
+			setShipment2BatchModalError('Нет доступных складов для выбора на следующих этапах');
+		}
+		shipment2BatchWizardStep = 3;
+		renderShipment2BatchWizard();
+		if (primaryBtn) primaryBtn.disabled = false;
+		return;
+	}
+
+	if (shipment2BatchWizardStep === 3) {
+		var warehousesCountEl = document.getElementById('shipment2BatchWarehouseCount');
+		var selectedCountRaw = (warehousesCountEl && warehousesCountEl.value) ? warehousesCountEl.value : '';
+		var selectedCount = parseInt(String(selectedCountRaw).trim(), 10);
+		var maxCount = Array.isArray(shipment2AvailableWarehouses) ? shipment2AvailableWarehouses.length : 0;
+		if (!selectedCount) {
+			setShipment2BatchModalError('Введите количество складов');
+			return;
+		}
+		if (selectedCount < 1 || selectedCount > maxCount) {
+			setShipment2BatchModalError('Количество должно быть от 1 до ' + maxCount);
+			return;
+		}
+
+		shipment2BatchRequestedWarehouseCount = selectedCount;
+		shipment2BatchDraft.warehouse_count = selectedCount;
+		renderShipment2BatchWarehousePickers(selectedCount);
+		shipment2BatchWizardStep = 4;
+		renderShipment2BatchWizard();
+		return;
+	}
+
+	if (shipment2BatchWizardStep === 4) {
+		var selectedWarehouseIds = getShipment2BatchSelectedWarehouseIds(shipment2BatchRequestedWarehouseCount);
+		if (!selectedWarehouseIds) {
+			setShipment2BatchModalError('Выберите склады во всех полях');
+			return;
+		}
+		if (selectedWarehouseIds === 'duplicate') {
+			setShipment2BatchModalError('Нельзя выбирать один и тот же склад несколько раз');
+			return;
+		}
+		shipment2BatchDraft.warehouse_ids = selectedWarehouseIds.slice();
+		if (primaryBtn) primaryBtn.disabled = true;
+		try {
+			if (!shipment2BatchDraft.saved_batch_id) {
+				var createResult = await apiPost('/api/fbo/batches', { business_id: shipment2BatchDraft.business_id });
+				if (!createResult || !createResult.success || !createResult.item || !createResult.item.id) {
+					throw new Error((createResult && createResult.error) || 'Ошибка создания партии');
+				}
+				shipment2BatchDraft.saved_batch_id = Number(createResult.item.id);
+				shipment2BatchDraft.saved_public_id = createResult.item.public_id ? String(createResult.item.public_id) : '';
+			}
+
+			await recreateShipment2DraftShipments(selectedWarehouseIds, shipment2BatchDraft.source_id);
+
+			await ensureShipment2BatchBoxesReady();
+			renderShipment2BatchWarehouses();
+			renderShipment2BatchBoxes();
+			setShipment2BatchProductError('');
+			renderShipment2BatchProductsList();
+			await loadShipments2();
+			shipment2BatchWizardStep = 5;
+			renderShipment2BatchWizard();
+		} catch (saveError) {
+			setShipment2BatchModalError((saveError && saveError.message) ? saveError.message : 'Ошибка сохранения');
+		} finally {
+			if (primaryBtn) primaryBtn.disabled = false;
+		}
+		return;
+	}
+
+	if (shipment2BatchWizardStep === 5) {
+		setShipment2BatchModalError('');
+		setShipment2BatchProductError('');
+		var barcodeInputEl = document.getElementById('shipment2BatchBarcodeInput');
+		var qtyInputEl = document.getElementById('shipment2BatchBarcodeQty');
+		var boxNoInputEl = document.getElementById('shipment2BatchBoxNoInput');
+		var barcode = String((barcodeInputEl && barcodeInputEl.value) ? barcodeInputEl.value : '').trim();
+		var qty = parseInt((qtyInputEl && qtyInputEl.value) ? qtyInputEl.value : '1', 10);
+		var boxNo = parseInt((boxNoInputEl && boxNoInputEl.value) ? boxNoInputEl.value : '0', 10);
+		if (!barcode) {
+			setShipment2BatchProductError('Введите штрихкод');
+			return;
+		}
+		if (!qty || qty < 1) {
+			setShipment2BatchProductError('Укажите корректное количество');
+			return;
+		}
+		if (!boxNo || boxNo < 1) {
+			setShipment2BatchProductError('Укажите корректный номер короба');
+			return;
+		}
+		if (!shipment2BatchSelectedWarehouseLinkId) {
+			setShipment2BatchProductError('Выберите склад');
+			return;
+		}
+		var selectedWarehouseLink = (shipment2BatchWarehouseLinks || []).find(function(item){ return Number(item.id) === Number(shipment2BatchSelectedWarehouseLinkId); });
+		if (!selectedWarehouseLink || !selectedWarehouseLink.shipment_id) {
+			setShipment2BatchProductError('Склад недоступен для добавления');
+			return;
+		}
+		if (primaryBtn) primaryBtn.disabled = true;
+		try {
+			var selectedBox = await ensureShipment2BatchBoxByNumber(shipment2BatchSelectedWarehouseLinkId, boxNo);
+			shipment2BatchSelectedBoxId = Number(selectedBox.id);
+			renderShipment2BatchBoxes();
+			for (var scanIndex = 0; scanIndex < qty; scanIndex += 1) {
+				var scanRes = await apiPost('/api/fbo/scans', {
+					shipment_id: Number(selectedWarehouseLink.shipment_id),
+					box_id: Number(selectedBox.id),
+					barcode: barcode
+				});
+				if (!scanRes || !scanRes.success) {
+					throw new Error((scanRes && scanRes.error) || 'Ошибка добавления товара');
+				}
+			}
+			shipment2BatchAddedProducts.unshift({ barcode: barcode, qty: qty, box_no: Number(selectedBox.box_no || 0), warehouse_name: selectedWarehouseLink.warehouse_name || '' });
+			if (shipment2BatchAddedProducts.length > 30) shipment2BatchAddedProducts = shipment2BatchAddedProducts.slice(0, 30);
+			renderShipment2BatchProductsList();
+			if (barcodeInputEl) {
+				barcodeInputEl.value = '';
+				barcodeInputEl.focus();
+			}
+			if (qtyInputEl) qtyInputEl.value = '1';
+			if (boxNoInputEl) boxNoInputEl.value = String(selectedBox.box_no || boxNo);
+		} catch (addError) {
+			setShipment2BatchProductError((addError && addError.message) ? addError.message : 'Ошибка добавления товара');
+		} finally {
+			if (primaryBtn) primaryBtn.disabled = false;
+		}
+		return;
+	}
 }
 
 async function loadShipment2EditWarehouses(shipmentId){
@@ -639,6 +1794,7 @@ function renderShipment2EditWarehouses(){
 function fillShipment2EditReadonly(shipment){
 	setElementText('shipment2EditPublicId', getShipmentDisplayName(shipment));
 	setElementText('shipment2EditStatus', formatShipmentStatus(shipment && shipment.status));
+	setElementText('shipment2EditSource', shipment && shipment.source_name ? String(shipment.source_name) : '—');
 	setElementText('shipment2EditBatch', getBatchDisplayName(shipment));
 	setElementText('shipment2EditDate', formatDateOnly(shipment && shipment.created_at));
 	setElementText('shipment2EditAuthor', getShipmentAuthor(shipment));
@@ -658,6 +1814,12 @@ function bindCheckAll(){
 	head.addEventListener('change', function(){
 		document.querySelectorAll('.row-check').forEach(function(el){ el.checked = head.checked; });
 	});
+}
+
+function setShipment2RowHover(rowId, active){
+	var row = document.getElementById('shipment2Row' + rowId);
+	if (!row) return;
+	row.classList.toggle('active-hover', !!active);
 }
 
 async function loadShipments2(){
@@ -681,20 +1843,20 @@ async function loadShipments2(){
 		var units = escapeHtml(formatDashCount(item.items_count));
 		var date = escapeHtml(formatDashValue(formatDateOnly(item.created_at)));
 		var author = escapeHtml(formatDashValue(getShipmentAuthor(item)));
-		return '<tr>'
+		return '<tr id="shipment2Row' + item.id + '" class="shipment2-row">'
 			+ '<td class="check-col"><input class="row-check" type="checkbox" data-id="' + item.id + '" /></td>'
-			+ '<td class="meta-col date-col">' + date + '</td>'
-			+ '<td><span class="shipment-name">' + title + '</span></td>'
-			+ '<td class="meta-col">' + batch + '</td>'
-			+ '<td class="meta-col">' + warehouse + '</td>'
-			+ '<td class="meta-col">' + boxes + '</td>'
-			+ '<td class="meta-col">' + units + '</td>'
-			+ '<td class="meta-col"><span class="status-text ' + statusClass + '">' + status + '</span></td>'
-			+ '<td class="meta-col">' + author + '</td>'
+			+ '<td class="meta-col date-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + date + '</td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + batch + '</td>'
+			+ '<td class="shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)"><span class="shipment-name">' + title + '</span></td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + warehouse + '</td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + boxes + '</td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + units + '</td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)"><span class="status-text ' + statusClass + '">' + status + '</span></td>'
+			+ '<td class="meta-col shipment2-click-cell" onclick="openShipment2InfoModal(' + item.id + ')" onmouseenter="setShipment2RowHover(' + item.id + ', true)" onmouseleave="setShipment2RowHover(' + item.id + ', false)">' + author + '</td>'
 			+ '<td class="actions-cell">'
-			+ '<button class="icon-btn" type="button" title="Детали" onclick="openShipment2Details(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /></svg></button>'
-			+ '<button class="row-action-btn" type="button" title="Редактировать" onclick="editShipment2(' + item.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>'
-			+ '<button class="row-action-btn" type="button" title="Удалить" onclick="deleteShipment2(' + item.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>'
+			+ '<button class="icon-btn" type="button" title="Детали" onclick="event.stopPropagation(); openShipment2Details(' + item.id + ')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /></svg></button>'
+			+ '<button class="row-action-btn" type="button" title="Редактирование скоро" onclick="event.stopPropagation();"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>'
+			+ '<button class="row-action-btn" type="button" title="Удалить" onclick="event.stopPropagation(); deleteShipment2(' + item.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>'
 			+ '</td>'
 			+ '</tr>';
 	}).join('');
@@ -705,22 +1867,6 @@ async function deleteShipment2(id){
 	var d = await apiDelete('/api/fbo/shipments/' + id);
 	if (!d || !d.success) return alert((d && d.error) || 'Ошибка удаления');
 	await loadShipments2();
-}
-
-async function ensureShipment2EditDictionaries(){
-	var sourcesRes = await apiGet('/api/fbo/sources');
-	shipments2Sources = (sourcesRes && sourcesRes.success && Array.isArray(sourcesRes.items)) ? sourcesRes.items : [];
-}
-
-function fillShipment2EditSelects(selectedSourceId){
-	var sourceEl = document.getElementById('shipment2EditSource');
-	if (!sourceEl) return;
-
-	sourceEl.innerHTML = shipments2Sources.length
-		? shipments2Sources.map(function(item){ return '<option value="' + item.id + '">' + escapeHtml(item.name || ('ID ' + item.id)) + '</option>'; }).join('')
-		: '<option value="">Нет источников</option>';
-
-	if (selectedSourceId) sourceEl.value = String(selectedSourceId);
 }
 
 function closeShipment2EditModal(){
@@ -736,40 +1882,18 @@ function closeShipment2EditModalOnOutsideClick(event){
 	}
 }
 
-async function editShipment2(id){
+async function openShipment2InfoModal(id){
 	var shipment = (shipments2Items || []).find(function(item){ return Number(item.id) === Number(id); });
 	if (!shipment) {
 		alert('Поставка не найдена');
 		return;
 	}
-	await ensureShipment2EditDictionaries();
-	if (!shipments2Sources.length) {
-		alert('Недостаточно данных для редактирования (источники)');
-		return;
-	}
 	await loadShipment2EditWarehouses(id);
 	shipment2EditingId = Number(id);
-	fillShipment2EditSelects(shipment.source_id);
 	fillShipment2EditReadonly(shipment);
 	renderShipment2EditWarehouses();
 	var modal = document.getElementById('shipment2EditModal');
 	if (modal) modal.classList.add('active');
-}
-
-async function saveShipment2Edit(){
-	if (!shipment2EditingId) return;
-	var sourceId = parseInt((document.getElementById('shipment2EditSource') || {}).value || '0', 10);
-	if (!sourceId) {
-		alert('Выбери источник');
-		return;
-	}
-	var result = await apiPut('/api/fbo/shipments/' + shipment2EditingId, { source_id: sourceId });
-	if (!result || !result.success) {
-		alert((result && result.error) || 'Ошибка обновления поставки');
-		return;
-	}
-	closeShipment2EditModal();
-	await loadShipments2();
 }
 
 function openShipment2Details(id){
@@ -778,16 +1902,50 @@ function openShipment2Details(id){
 
 window.deleteShipment2 = deleteShipment2;
 window.openShipment2Details = openShipment2Details;
-window.editShipment2 = editShipment2;
+window.openShipment2InfoModal = openShipment2InfoModal;
+window.setShipment2RowHover = setShipment2RowHover;
 window.closeShipment2EditModal = closeShipment2EditModal;
 window.closeShipment2EditModalOnOutsideClick = closeShipment2EditModalOnOutsideClick;
-window.saveShipment2Edit = saveShipment2Edit;
 window.createShipment2Batch = createShipment2Batch;
+window.openShipment2BatchModal = openShipment2BatchModal;
+window.closeShipment2BatchModal = closeShipment2BatchModal;
+window.closeShipment2BatchModalOnOutsideClick = closeShipment2BatchModalOnOutsideClick;
+window.createShipment2WarehouseFromBatchStep = createShipment2WarehouseFromBatchStep;
+window.goBackShipment2BatchStep = goBackShipment2BatchStep;
+window.submitShipment2BatchCreate = submitShipment2BatchCreate;
 window.createShipment2Warehouse = createShipment2Warehouse;
+window.createShipment2Source = createShipment2Source;
+window.openShipment2WarehouseModal = openShipment2WarehouseModal;
+window.closeShipment2WarehouseModal = closeShipment2WarehouseModal;
+window.closeShipment2WarehouseModalOnOutsideClick = closeShipment2WarehouseModalOnOutsideClick;
+window.submitShipment2WarehouseCreate = submitShipment2WarehouseCreate;
+window.deleteShipment2Warehouse = deleteShipment2Warehouse;
+window.openShipment2SourceModal = openShipment2SourceModal;
+window.closeShipment2SourceModal = closeShipment2SourceModal;
+window.closeShipment2SourceModalOnOutsideClick = closeShipment2SourceModalOnOutsideClick;
+window.submitShipment2SourceCreate = submitShipment2SourceCreate;
+window.deleteShipment2Source = deleteShipment2Source;
+window.selectShipment2BatchWarehouse = selectShipment2BatchWarehouse;
+window.selectShipment2BatchBox = selectShipment2BatchBox;
+window.openShipment2CameraModal = openShipment2CameraModal;
+window.closeShipment2CameraModal = closeShipment2CameraModal;
+window.closeShipment2CameraModalOnOutsideClick = closeShipment2CameraModalOnOutsideClick;
 
-document.getElementById('btnRefreshShipments2').addEventListener('click', function(){ loadShipments2(); });
 document.getElementById('btnCreateShipment2Batch').addEventListener('click', function(){ createShipment2Batch(); });
 document.getElementById('btnCreateShipment2Warehouse').addEventListener('click', function(){ createShipment2Warehouse(); });
+document.getElementById('btnCreateShipment2Source').addEventListener('click', function(){ createShipment2Source(); });
+document.getElementById('shipment2WarehouseNameInput').addEventListener('keydown', function(event){ if (event.key === 'Enter') { event.preventDefault(); submitShipment2WarehouseCreate(); } });
+document.getElementById('shipment2SourceNameInput').addEventListener('keydown', function(event){ if (event.key === 'Enter') { event.preventDefault(); submitShipment2SourceCreate(); } });
+document.getElementById('shipment2BatchBoxNoInput').addEventListener('input', function(event){
+	var boxNo = parseInt(String(event && event.target && event.target.value ? event.target.value : '').trim(), 10);
+	if (!boxNo || !shipment2BatchSelectedWarehouseLinkId) return;
+	var existing = (shipment2BatchBoxes || []).find(function(item){
+		return Number(item.shipment_warehouse_id) === Number(shipment2BatchSelectedWarehouseLinkId) && Number(item.box_no) === boxNo;
+	});
+	if (!existing) return;
+	shipment2BatchSelectedBoxId = Number(existing.id);
+	renderShipment2BatchBoxes();
+});
 bindCheckAll();
 loadShipments2();
 </script>
