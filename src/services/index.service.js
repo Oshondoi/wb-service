@@ -978,6 +978,68 @@ if ((hash.type === 'recovery' || mode === 'recovery') && hash.access_token) {
 		}
 	}
 
+  async function exportCashDebtSummaryXlsx(req, res) {
+    try {
+      const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+      if (!rows.length) {
+        return res.status(400).json({ success: false, error: 'Нет данных для экспорта' });
+      }
+
+      const headers = ['Контрагент', 'Тип', 'Прогресс', 'Магазин', 'Всего', 'Оплачено', 'Остаток', 'Статус'];
+
+      const normalizedRows = rows.map((row) => ({
+        'Контрагент': row && row['Контрагент'] != null ? String(row['Контрагент']) : '—',
+        'Тип': row && row['Тип'] != null ? String(row['Тип']) : '—',
+        'Прогресс': row && row['Прогресс'] != null ? String(row['Прогресс']) : '—',
+        'Магазин': row && row['Магазин'] != null ? String(row['Магазин']) : '—',
+        'Всего': row && row['Всего'] != null ? String(row['Всего']) : '—',
+        'Оплачено': row && row['Оплачено'] != null ? String(row['Оплачено']) : '—',
+        'Остаток': row && row['Остаток'] != null ? String(row['Остаток']) : '—',
+        'Статус': row && row['Статус'] != null ? String(row['Статус']) : '—'
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(normalizedRows, { header: headers });
+
+      const widthMatrix = [headers].concat(
+        normalizedRows.map((row) => headers.map((header) => {
+          const value = row[header] == null ? '' : String(row[header]);
+          return value;
+        }))
+      );
+
+      const minWidths = {
+        'Контрагент': 20,
+        'Тип': 14,
+        'Прогресс': 12,
+        'Магазин': 14,
+        'Всего': 14,
+        'Оплачено': 14,
+        'Остаток': 14,
+        'Статус': 12
+      };
+
+      worksheet['!cols'] = headers.map((header, colIdx) => {
+        const maxLen = widthMatrix.reduce((max, row) => {
+          const len = (row[colIdx] || '').length;
+          return len > max ? len : max;
+        }, 0);
+        const bounded = Math.max(minWidths[header] || 10, Math.min(maxLen + 2, 60));
+        return { wch: bounded };
+      });
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Список контрагентов');
+      const fileBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      const date = new Date().toISOString().slice(0, 10);
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="debt-summary-${date}.xlsx"`);
+      return res.send(fileBuffer);
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message || 'Ошибка экспорта XLSX' });
+    }
+  }
+
 	function getHomePage(req, res) {
   res.send(`<!doctype html>
 <html><head><meta charset="utf-8" />
@@ -1234,8 +1296,17 @@ input[type=number]{-moz-appearance:textfield}
               <div class="filter-item" data-value="all">Все контрагенты</div>
             </div>
           </div>
+          <div class="filter-menu">
+            <button id="debtSummaryBusinessFilterBtn" class="api-btn secondary create-op" style="padding:6px 10px" onclick="toggleDebtSummaryBusinessMenu(event)">Все магазины</button>
+            <div id="debtSummaryBusinessMenu" class="filter-dropdown">
+              <div class="filter-item" data-value="all">Все магазины</div>
+            </div>
+          </div>
         </div>
-        <button id="debtSummaryBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedDebtSummaries()" disabled>Удалить выбранные</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button id="debtSummaryExportBtn" class="api-btn" style="padding:6px 10px" onclick="exportDebtSummaryToExcel()">Скачать Excel</button>
+          <button id="debtSummaryBulkDeleteBtn" class="api-btn" style="padding:6px 10px" onclick="deleteSelectedDebtSummaries()" disabled>Удалить выбранные</button>
+        </div>
       </div>
       <div style="max-height:60vh;overflow:auto">
         <table class="cash-table debt-summary-table">
@@ -3408,6 +3479,113 @@ async function deleteSelectedDebtSummaries() {
   }
 }
 
+async function exportDebtSummaryToExcel() {
+  if (!Array.isArray(cashDebts) || !cashDebts.length) {
+    alert('❌ Нет данных для экспорта');
+    return;
+  }
+
+  const summary = {};
+  cashDebts.forEach(debt => {
+    const groupId = (debt.debt_group_id && debt.debt_group_id !== 'null') ? debt.debt_group_id : debt.id;
+    if (!summary[groupId]) {
+      summary[groupId] = {
+        group_id: groupId,
+        counterparty: debt.counterparty || 'Без контрагента',
+        debt_type: debt.debt_type,
+        total_amount: 0,
+        paid_amount: 0,
+        business_id: debt.business_id
+      };
+    }
+    const amount = Number(debt.amount || 0);
+    if (amount > 0) {
+      summary[groupId].total_amount += amount;
+    } else {
+      summary[groupId].paid_amount += Math.abs(amount);
+    }
+  });
+
+  const summaries = Object.values(summary).map(item => {
+    const remainder = item.total_amount - item.paid_amount;
+    const isClosed = Math.abs(remainder) < 0.01;
+    const percent = item.total_amount > 0 ? (item.paid_amount / item.total_amount) * 100 : 0;
+    return {
+      ...item,
+      remainder,
+      isClosed,
+      statusLabel: isClosed ? 'Закрыт' : 'Открыт',
+      percent
+    };
+  });
+
+  const filteredSummaries = applyDebtSummaryFilters(summaries).sort((a, b) => {
+    if (!a.isClosed && b.isClosed) return -1;
+    if (a.isClosed && !b.isClosed) return 1;
+    return b.percent - a.percent;
+  });
+
+  const selectedGroupIds = new Set(
+    Array.from(document.querySelectorAll('#debtSummaryBody .debt-summary-checkbox:checked'))
+      .map(cb => String(cb.dataset.groupId || ''))
+      .filter(Boolean)
+  );
+
+  const rowsToExport = selectedGroupIds.size
+    ? filteredSummaries.filter(item => selectedGroupIds.has(String(item.group_id)))
+    : filteredSummaries;
+
+  if (!rowsToExport.length) {
+    alert('❌ Нет данных для экспорта по текущим фильтрам/выбору');
+    return;
+  }
+
+  const exportRows = rowsToExport.map(item => {
+    const typeLabel = item.debt_type === 'receivable' ? 'Нам должны' : 'Мы должны';
+    const businessName = getBusinessNameById(item.business_id);
+    const percent = item.total_amount > 0 ? Math.max(0, Math.min(100, Math.round((item.paid_amount / item.total_amount) * 100))) : 0;
+
+    return {
+      'Контрагент': item.counterparty || '—',
+      'Тип': typeLabel,
+      'Прогресс': percent + '%',
+      'Магазин': businessName || '—',
+      'Всего': formatMoney(item.total_amount),
+      'Оплачено': formatMoney(item.paid_amount),
+      'Остаток': formatMoney(item.remainder),
+      'Статус': item.statusLabel || '—'
+    };
+  });
+
+  try {
+    const response = await fetch('/api/cash/debts/summary-export-xlsx', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+      },
+      body: JSON.stringify({ rows: exportRows })
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || ('HTTP ' + response.status));
+    }
+
+    const blob = await response.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    const date = new Date().toISOString().slice(0, 10);
+    link.download = 'debt-summary-' + date + '.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  } catch (err) {
+    alert('❌ ' + (err && err.message ? err.message : 'Ошибка экспорта XLSX'));
+  }
+}
+
 function openDebtOperationsModal(groupId) {
   const modal = document.getElementById('debtOperationsModal');
   const body = document.getElementById('debtOperationsModalBody');
@@ -3668,14 +3846,19 @@ function restoreDebtOperationsFilters() {
 function getDebtSummaryFilterValues() {
   const typeValue = localStorage.getItem('debtSummaryTypeFilter') || 'all';
   const counterpartyValue = localStorage.getItem('debtSummaryCounterpartyFilter') || 'all';
-  return { typeValue, counterpartyValue };
+  const businessValue = localStorage.getItem('debtSummaryBusinessFilter') || 'all';
+  return { typeValue, counterpartyValue, businessValue };
 }
 
 function applyDebtSummaryFilters(items) {
-  const { typeValue, counterpartyValue } = getDebtSummaryFilterValues();
+  const { typeValue, counterpartyValue, businessValue } = getDebtSummaryFilterValues();
   return (items || []).filter(item => {
     if (typeValue !== 'all' && item.debt_type !== typeValue) return false;
     if (counterpartyValue !== 'all' && String(item.counterparty || '') !== counterpartyValue) return false;
+    if (businessValue !== 'all') {
+      const itemBusiness = item && item.business_id != null ? String(item.business_id) : '__none__';
+      if (itemBusiness !== businessValue) return false;
+    }
     return true;
   });
 }
@@ -3683,7 +3866,9 @@ function applyDebtSummaryFilters(items) {
 function restoreDebtSummaryFilters() {
   localStorage.setItem('debtSummaryTypeFilter', 'all');
   localStorage.setItem('debtSummaryCounterpartyFilter', 'all');
+  localStorage.setItem('debtSummaryBusinessFilter', 'all');
   rebuildDebtSummaryCounterpartyMenu();
+  rebuildDebtSummaryBusinessMenu();
   updateDebtSummaryFilterButtons();
 }
 
@@ -3709,18 +3894,59 @@ function rebuildDebtSummaryCounterpartyMenu() {
   });
 }
 
+function rebuildDebtSummaryBusinessMenu() {
+  const menu = document.getElementById('debtSummaryBusinessMenu');
+  if (!menu) return;
+
+  const uniqueBusinessIds = Array.from(new Set(
+    (cashDebts || [])
+      .map(item => (item && item.business_id != null ? String(item.business_id) : '__none__'))
+  ));
+
+  const html = ['<div class="filter-item" data-value="all">Все магазины</div>'];
+  uniqueBusinessIds.forEach(idValue => {
+    if (idValue === 'all') return;
+    const label = idValue === '__none__' ? 'Без магазина' : getBusinessNameById(Number(idValue));
+    const safeLabel = String(label || 'Без магазина')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    html.push('<div class="filter-item" data-value="' + idValue + '">' + safeLabel + '</div>');
+  });
+
+  menu.innerHTML = html.join('');
+  menu.querySelectorAll('.filter-item').forEach(item => {
+    item.addEventListener('click', () => {
+      setDebtSummaryBusinessFilter(item.dataset.value || 'all');
+    });
+  });
+}
+
 function updateDebtSummaryFilterButtons() {
   const typeBtn = document.getElementById('debtSummaryTypeFilterBtn');
   const counterpartyBtn = document.getElementById('debtSummaryCounterpartyFilterBtn');
+  const businessBtn = document.getElementById('debtSummaryBusinessFilterBtn');
   const typeMenu = document.getElementById('debtSummaryTypeMenu');
   const counterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
-  const { typeValue, counterpartyValue } = getDebtSummaryFilterValues();
+  const businessMenu = document.getElementById('debtSummaryBusinessMenu');
+  const { typeValue, counterpartyValue, businessValue } = getDebtSummaryFilterValues();
 
   if (typeBtn) {
     typeBtn.textContent = typeValue === 'receivable' ? 'Нам должны' : typeValue === 'payable' ? 'Мы должны' : 'Все типы';
   }
   if (counterpartyBtn) {
     counterpartyBtn.textContent = counterpartyValue === 'all' ? 'Все контрагенты' : counterpartyValue;
+  }
+  if (businessBtn) {
+    if (businessValue === 'all') {
+      businessBtn.textContent = 'Все магазины';
+    } else if (businessValue === '__none__') {
+      businessBtn.textContent = 'Без магазина';
+    } else {
+      businessBtn.textContent = getBusinessNameById(Number(businessValue));
+    }
   }
   if (typeMenu) {
     typeMenu.querySelectorAll('.filter-item').forEach(item => {
@@ -3730,6 +3956,11 @@ function updateDebtSummaryFilterButtons() {
   if (counterpartyMenu) {
     counterpartyMenu.querySelectorAll('.filter-item').forEach(item => {
       item.classList.toggle('active', item.dataset.value === counterpartyValue);
+    });
+  }
+  if (businessMenu) {
+    businessMenu.querySelectorAll('.filter-item').forEach(item => {
+      item.classList.toggle('active', item.dataset.value === businessValue);
     });
   }
 }
@@ -3889,11 +4120,13 @@ function toggleDebtSummaryTypeMenu(event) {
   if (event) event.stopPropagation();
   const menu = document.getElementById('debtSummaryTypeMenu');
   const counterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
+  const summaryBusinessMenu = document.getElementById('debtSummaryBusinessMenu');
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
   const debtCounterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
   const businessMenu = document.getElementById('cashDebtBusinessMenu');
   if (counterpartyMenu) counterpartyMenu.classList.remove('open');
+  if (summaryBusinessMenu) summaryBusinessMenu.classList.remove('open');
   if (opMenu) opMenu.classList.remove('open');
   if (typeMenu) typeMenu.classList.remove('open');
   if (debtCounterpartyMenu) debtCounterpartyMenu.classList.remove('open');
@@ -3905,11 +4138,31 @@ function toggleDebtSummaryCounterpartyMenu(event) {
   if (event) event.stopPropagation();
   const menu = document.getElementById('debtSummaryCounterpartyMenu');
   const typeMenu = document.getElementById('debtSummaryTypeMenu');
+  const summaryBusinessMenu = document.getElementById('debtSummaryBusinessMenu');
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const debtTypeMenu = document.getElementById('cashDebtTypeMenu');
   const debtCounterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
   const businessMenu = document.getElementById('cashDebtBusinessMenu');
   if (typeMenu) typeMenu.classList.remove('open');
+  if (summaryBusinessMenu) summaryBusinessMenu.classList.remove('open');
+  if (opMenu) opMenu.classList.remove('open');
+  if (debtTypeMenu) debtTypeMenu.classList.remove('open');
+  if (debtCounterpartyMenu) debtCounterpartyMenu.classList.remove('open');
+  if (businessMenu) businessMenu.classList.remove('open');
+  if (menu) menu.classList.toggle('open');
+}
+
+function toggleDebtSummaryBusinessMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById('debtSummaryBusinessMenu');
+  const typeMenu = document.getElementById('debtSummaryTypeMenu');
+  const summaryCounterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
+  const opMenu = document.getElementById('cashDebtOperationMenu');
+  const debtTypeMenu = document.getElementById('cashDebtTypeMenu');
+  const debtCounterpartyMenu = document.getElementById('cashDebtCounterpartyMenu');
+  const businessMenu = document.getElementById('cashDebtBusinessMenu');
+  if (typeMenu) typeMenu.classList.remove('open');
+  if (summaryCounterpartyMenu) summaryCounterpartyMenu.classList.remove('open');
   if (opMenu) opMenu.classList.remove('open');
   if (debtTypeMenu) debtTypeMenu.classList.remove('open');
   if (debtCounterpartyMenu) debtCounterpartyMenu.classList.remove('open');
@@ -3965,6 +4218,14 @@ function setDebtSummaryCounterpartyFilter(value) {
   renderDebtSummary();
 }
 
+function setDebtSummaryBusinessFilter(value) {
+  localStorage.setItem('debtSummaryBusinessFilter', value || 'all');
+  const menu = document.getElementById('debtSummaryBusinessMenu');
+  if (menu) menu.classList.remove('open');
+  updateDebtSummaryFilterButtons();
+  renderDebtSummary();
+}
+
 document.addEventListener('click', (event) => {
   const opMenu = document.getElementById('cashDebtOperationMenu');
   const typeMenu = document.getElementById('cashDebtTypeMenu');
@@ -3972,6 +4233,7 @@ document.addEventListener('click', (event) => {
   const businessMenu = document.getElementById('cashDebtBusinessMenu');
   const summaryTypeMenu = document.getElementById('debtSummaryTypeMenu');
   const summaryCounterpartyMenu = document.getElementById('debtSummaryCounterpartyMenu');
+  const summaryBusinessMenu = document.getElementById('debtSummaryBusinessMenu');
   const stocksMenu = document.getElementById('cashStocksBusinessMenu');
   const stocksBtn = document.getElementById('cashStocksBusinessBtn');
   if (stocksMenu && (stocksMenu.contains(event.target) || (stocksBtn && stocksBtn.contains(event.target)))) {
@@ -3983,6 +4245,7 @@ document.addEventListener('click', (event) => {
   if (businessMenu) businessMenu.classList.remove('open');
   if (summaryTypeMenu) summaryTypeMenu.classList.remove('open');
   if (summaryCounterpartyMenu) summaryCounterpartyMenu.classList.remove('open');
+  if (summaryBusinessMenu) summaryBusinessMenu.classList.remove('open');
   if (stocksMenu) stocksMenu.classList.remove('open');
 });
 
@@ -4447,6 +4710,7 @@ if (savedTab === 'stocks') {
 		deleteCashDebtsBulk,
 		deleteCashDebt,
 		exportCashDebtsXlsx,
+    exportCashDebtSummaryXlsx,
 
 		getHomePage
 	};

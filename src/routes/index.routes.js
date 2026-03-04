@@ -31,6 +31,7 @@ module.exports = function indexRoutes(app, deps) {
 	app.delete('/api/cash/debts/bulk', requireAuth, controller.deleteCashDebtsBulk);
 	app.delete('/api/cash/debts/:id', requireAuth, controller.deleteCashDebt);
 	app.post('/api/cash/debts/export-xlsx', requireAuth, controller.exportCashDebtsXlsx);
+	app.post('/api/cash/debts/summary-export-xlsx', requireAuth, controller.exportCashDebtSummaryXlsx);
 
 	app.get('/', requireAuth, controller.getHomePage);
 };

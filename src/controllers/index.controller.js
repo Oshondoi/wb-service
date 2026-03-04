@@ -31,6 +31,7 @@ module.exports = function createIndexController(deps) {
 		deleteCashDebtsBulk: (req, res) => service.deleteCashDebtsBulk(req, res),
 		deleteCashDebt: (req, res) => service.deleteCashDebt(req, res),
 		exportCashDebtsXlsx: (req, res) => service.exportCashDebtsXlsx(req, res),
+		exportCashDebtSummaryXlsx: (req, res) => service.exportCashDebtSummaryXlsx(req, res),
 
 		getHomePage: (req, res) => service.getHomePage(req, res)
 	};
